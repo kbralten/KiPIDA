@@ -32,16 +32,54 @@ To run Ki-PIDA on Windows, you must install the required dependencies into the P
 > [!TIP]
 > **PyPardiso** is highly recommended as it provides a multi-threaded parallel solver that is significantly faster for large PCB designs.
 
-## 📖 How to Use
+## 📖 Tutorial: Your First IR Drop Analysis
 
-1.  **Layout & Netlist:** Complete your power planes and traces in Pcbnew.
-2.  **Launch Plugin:** Open Ki-PIDA from the KiCad toolbar.
-3.  **Define Sources & Loads:** 
-    - Use **Auto-Discovery** to detect power nets.
-    - Assign **Voltage Sources** (VRMs) and **Current Loads** to specific pads or nets.
-    - Pair supply nets with their corresponding **Return Path** (GND).
-4.  **Simulate:** Click "Simulate" to generate the mesh and solve the DC network.
-5.  **Visualize:** Toggle between **Voltage Drop** and **Thermal** heatmaps to inspect results and generate DRC markers for violations.
+Follow these steps to perform a DC Power Integrity analysis on your board.
+
+### 1. Launch the Plugin
+Open your PCB layout in KiCad Pcbnew and click the **Ki-PIDA** icon in the top toolbar to open the analyzer.
+
+### 2. Discover and Setup Power Rails
+The **Power Tree & Config** tab is where you define your electrical network.
+- **Scan Board**: Click this to automatically discover nets connected to power plane zones.
+- **Manual Addition**: If your net isn't listed, click **Add Manual Net** and select it from the netlist.
+- **Set Voltage**: Select your net (e.g., `+3V3`) in the list. In **Rail Properties**, enter the **Nominal Voltage (V)** (e.g., `3.3`).
+
+![Power Tree & Config](image.png)
+
+### 3. Add Sources (VRMs / Power Inputs)
+Identify where power enters this net:
+1. Click **+ Source**.
+2. Select the source component (e.g., a regulator `U1` or connector `J1`).
+3. In the dialog, check the **Pads** that are connected to the power net.
+4. Click **OK**.
+
+### 4. Add Loads (Integrated Circuits / Sinks)
+Identify the components consuming power:
+1. Click **+ Load**.
+2. Select the sink component (e.g., MCU `U2` or FPGA `U3`).
+3. Enter the **Total Current (A)** consumed by this component (e.g., `0.5` for 500mA).
+4. Check the **Pads** through which the current is drawn.
+5. Click **OK**.
+
+![Add a load UI](image-1.png)
+
+### 5. Run the Simulation
+Before running, you can adjust the **Mesh Resolution (mm)**. A value of `0.1mm` is usually sufficient for accurate results.
+- Click **Run Simulation** at the bottom of the window.
+- The plugin will automatically switch to the **Log** tab. Wait a few seconds for the mesh generation and solver to complete.
+
+### 6. Analyze Results
+Once "Simulation Success" appears, the UI will jump to the **Results** tab.
+- **Text Summary**: Look at the top panel for the minimum voltage found on the net and the total percentage drop.
+- **Visual Heatmap**: The bottom panel displays a color-coded heatmap overlaid on your board geometry. 
+    - **Bright Colors (Red/Yellow)**: Represent areas near the source (nominal voltage).
+    - **Cool Colors (Blue/Purple)**: Represent areas with higher voltage drop (lowest voltage).
+
+![Results](image-2.png)
+
+> [!TIP]
+> Use the **Enable Debug Log** checkbox if you encounter issues during meshing or solving to see more detail in the Log tab.
 
 ## 🛠️ Technical Overview (For Developers)
 
@@ -73,10 +111,9 @@ As of the current version, Ki-PIDA implements a functional end-to-end pipeline f
 - **Automated Diagnostics:** Detects isolated copper nodes and disjoint electrical islands during the solve phase.
 
 ### User Experience:
-- **Interactive Configuration:** A simple tabbed interface to select nets and define electrical parameters.
-- **Pad-Level Mapping:** Precisely assign voltages and currents to specific component pads.
-- **In-Memory Visualization:** Instant generation of 3D node plots to inspect voltage distribution without exporting files.
-- **Safe Net Locking:** Automatically locks your net selection after defining sources/loads to prevent configuration errors.
+- **Automated Rail Discovery:** Instantly find power nets based on zone connectivity.
+- **Granular Control:** Assign sources and loads down to the individual pad level.
+- **In-Memory Visualization:** Instant generation of color-coded heatmaps to inspect voltage distribution without exporting files.
 
 ## �🗺️ Roadmap
 
