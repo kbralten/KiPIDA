@@ -360,7 +360,7 @@ class Mesher:
             import io
             import wx
             
-            fig = plt.figure(figsize=(8, 6))
+            fig = plt.figure(figsize=(7, 5), constrained_layout=True)
             ax = fig.add_subplot(111, projection='3d')
             
             xs, ys, zs, c = [], [], [], []
@@ -383,7 +383,7 @@ class Mesher:
                 
             sc = ax.scatter(xs, ys, zs, c=c, cmap='viridis')
             if has_results:
-                plt.colorbar(sc, label='Voltage (V)')
+                plt.colorbar(sc, label='Voltage (V)', shrink=0.8)
             
             ax.set_xlabel('X (mm)'); ax.set_ylabel('Y (mm)'); ax.set_zlabel('L (pseudo)')
             ax.invert_yaxis()
@@ -418,7 +418,7 @@ class Mesher:
             plt.savefig(output_path, format='png', dpi=150, bbox_inches='tight')
             
             buf = io.BytesIO()
-            plt.savefig(buf, format='png', dpi=100)
+            plt.savefig(buf, format='png', dpi=120, bbox_inches='tight')
             plt.close(fig)
             buf.seek(0)
             image = wx.Image(buf, wx.BITMAP_TYPE_PNG)

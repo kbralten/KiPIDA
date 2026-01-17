@@ -30,19 +30,47 @@ class NetDiscoverer:
         """
         Returns a list of PowerRail objects found on the board.
         Does NOT fully populate sources/loads automatically yet, just sets up candidates.
+        Filters out nets that don't have any pads or don't have any traces/areas.
         """
         candidates = []
+        
+        # 1. Pre-scan connectivity
+        nets_with_pads = set()
+        nets_with_copper = set()
+        
+        # Check pads
+        for fp in self.board.GetFootprints():
+            for pad in fp.Pads():
+                nc = pad.GetNetCode()
+                if nc > 0: # 0 is Usually No Net
+                    nets_with_pads.add(nc)
+                    
+        # Check traces (tracks/vias)
+        for track in self.board.GetTracks():
+            nc = track.GetNetCode()
+            if nc > 0:
+                nets_with_copper.add(nc)
+                
+        # Check zones
+        for zone in self.board.Zones():
+            nc = zone.GetNetCode()
+            if nc > 0:
+                nets_with_copper.add(nc)
+        
         nets = self.board.GetNetsByName()
         
         for netname, net in nets.items():
             s_name = str(netname)
             if not s_name: continue
             
-            # 1. Check if name looks like power
-            is_power_name = any(re.search(p, s_name) for p in self.power_name_patterns)
+            nc = net.GetNetCode()
             
-            # 2. Check Pin Types (TODO: This requires iterating all pads, can be slow on huge boards)
-            # For now, rely heavily on name + voltage detection for the "Quick Scan"
+            # Filter: Must have at least one pad AND at least one copper element
+            if nc not in nets_with_pads or nc not in nets_with_copper:
+                continue
+                
+            # 2. Check if name looks like power
+            is_power_name = any(re.search(p, s_name) for p in self.power_name_patterns)
             
             est_voltage = self._estimate_voltage(s_name)
             
