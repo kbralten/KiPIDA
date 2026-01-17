@@ -92,7 +92,7 @@ from extractor import GeometryExtractor
 class TestGeometryExtractor(unittest.TestCase):
     def setUp(self):
         self.board = MockBoard()
-        self.extractor = GeometryExtractor(self.board)
+        self.extractor = GeometryExtractor(self.board, debug=False, log_callback=None)
         
     def test_stackup_defaults(self):
         stackup = self.extractor.get_board_stackup()

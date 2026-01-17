@@ -118,6 +118,13 @@ class KiPIDA_MainDialog(wx.Dialog):
         grid_sett_sizer.Add(self.txt_grid_size, 0, wx.ALIGN_CENTER_VERTICAL)
         right_sizer.Add(grid_sett_sizer, 0, wx.EXPAND | wx.ALL, 5)
         
+        # Debug Mode Setting
+        debug_sett_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        self.chk_debug = wx.CheckBox(parent, label="Enable Debug Logging")
+        self.chk_debug.SetValue(False)
+        debug_sett_sizer.Add(self.chk_debug, 0, wx.ALIGN_CENTER_VERTICAL)
+        right_sizer.Add(debug_sett_sizer, 0, wx.EXPAND | wx.ALL, 5)
+        
         splitter.Add(right_sizer, 1, wx.EXPAND | wx.ALL, 5)
         
         parent.SetSizer(splitter)
@@ -300,7 +307,10 @@ class KiPIDA_MainDialog(wx.Dialog):
         
         try:
             # 1. Extraction
-            extractor = GeometryExtractor(self.board)
+            debug_mode = self.chk_debug.GetValue()
+            if debug_mode:
+                self.log("Debug mode enabled - detailed diagnostics will follow...")
+            extractor = GeometryExtractor(self.board, debug=debug_mode, log_callback=self.log)
             stackup = extractor.get_board_stackup()
             geo = extractor.get_net_geometry(net_name)
             if not geo:
@@ -308,6 +318,24 @@ class KiPIDA_MainDialog(wx.Dialog):
                 return
 
             self.log(f"Geometry extracted. Layers: {list(geo.keys())}")
+            
+            # Visualize extracted geometry if debug mode
+            if debug_mode:
+                self.log("Generating geometry visualization...")
+                try:
+                    import wx
+                    geo_buf = extractor.plot_geometry(geo)
+                    if geo_buf:
+                        image = wx.Image(geo_buf, wx.BITMAP_TYPE_PNG)
+                        geo_bitmap = wx.Bitmap(image)
+                        # Show in results tab temporarily
+                        self.result_image.SetBitmap(geo_bitmap)
+                        self.scrolled_img.GetSizer().Layout()
+                        self.scrolled_img.FitInside()
+                        self.notebook.SetSelection(1)  # Show Results tab
+                        self.log("Geometry plot displayed in Results tab.")
+                except Exception as e:
+                    self.log(f"Geometry plot failed: {e}")
             
             # 2. Meshing
             self.log("Generating Mesh...")
@@ -317,9 +345,24 @@ class KiPIDA_MainDialog(wx.Dialog):
             except:
                 gs = 0.1
                 
-            mesher = Mesher(self.board)
+            mesher = Mesher(self.board, debug=debug_mode, log_callback=self.log)
             mesh = mesher.generate_mesh(net_name, geo, stackup, grid_size_mm=gs)
             self.log(f"Mesh generated: {len(mesh.nodes)} nodes, {len(mesh.edges)} edges.")
+            
+            # Show mesh visualization before solving if debug mode
+            if debug_mode:
+                self.log("Generating pre-solve mesh visualization...")
+                try:
+                    import wx
+                    mesh_bitmap = mesher.debug_plot(mesh, stackup=stackup)
+                    if mesh_bitmap:
+                        self.result_image.SetBitmap(mesh_bitmap)
+                        self.scrolled_img.GetSizer().Layout()
+                        self.scrolled_img.FitInside()
+                        self.notebook.SetSelection(1)  # Show Results tab
+                        self.log("Pre-solve mesh plot displayed (no voltage data yet).")
+                except Exception as e:
+                    self.log(f"Pre-solve mesh plot failed: {e}")
             
             # 3. Solver Setup
             # Need to map Source/Load Pads to Mesh Nodes
@@ -399,7 +442,7 @@ class KiPIDA_MainDialog(wx.Dialog):
                 # 5. Visualize
                 mesh.results = results
                 self.log("Generating Plot...")
-                bitmap = mesher.debug_plot(mesh)
+                bitmap = mesher.debug_plot(mesh, stackup=stackup)
                 
                 if bitmap:
                     self.result_image.SetBitmap(bitmap)

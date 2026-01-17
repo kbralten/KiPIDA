@@ -21,10 +21,17 @@ class Mesh:
         self.grid_step = 0
 
 class Mesher:
-    def __init__(self, board):
+    def __init__(self, board, debug=False, log_callback=None):
         self.board = board
+        self.debug = debug
+        self.log_callback = log_callback
         if np is None or Point is None:
             raise ImportError("NumPy and Shapely are required for Meshing.")
+    
+    def _log(self, msg):
+        """Helper to log debug messages."""
+        if self.debug and self.log_callback:
+            self.log_callback(f"[MESH] {msg}")
 
     def generate_mesh(self, net_name, geometry_by_layer, stackup, grid_size_mm=0.5):
         """
@@ -76,11 +83,17 @@ class Mesher:
         x_coords = np.linspace(min_x, min_x + (nx * grid_size_mm), nx + 1)
         y_coords = np.linspace(min_y, min_y + (ny * grid_size_mm), ny + 1)
         
+        if self.debug:
+            self._log(f"Grid setup: {nx+1}x{ny+1} points, bounds ({min_x:.1f},{min_y:.1f}) to ({max_x:.1f},{max_y:.1f}), step={grid_size_mm}mm")
+        
         # 3. Rasterization (Lateral Mesh)
         node_counter = 0
         
         for layer_id, poly in geometry_by_layer.items():
             if poly.is_empty: continue
+            
+            if self.debug:
+                self._log(f"Meshing layer {layer_id}: area={poly.area:.2f} mm²")
             
             buffered_poly = poly.buffer(1e-5)
             
@@ -100,6 +113,7 @@ class Mesher:
             iy_min = int((pb[1] - min_y) / grid_size_mm)
             iy_max = int((pb[3] - min_y) / grid_size_mm) + 2
             
+            nodes_created = 0
             for ix in range(max(0, ix_min), min(nx+1, ix_max)):
                 for iy in range(max(0, iy_min), min(ny+1, iy_max)):
                     px = min_x + ix * grid_size_mm
@@ -110,23 +124,33 @@ class Mesher:
                         # Found a node
                         nid = node_counter
                         node_counter += 1
+                        nodes_created += 1
                         
                         mesh.nodes.append(nid)
                         mesh.node_coords[nid] = (px, py, layer_id)
                         mesh.node_map[(ix, iy, layer_id)] = nid
                         layer_nodes.append((ix, iy, nid))
+            
+            if self.debug:
+                self._log(f"  Created {nodes_created} nodes on layer {layer_id}")
 
             # Connect Lateral Neighbors
+            edges_created = 0
             for ix, iy, nid in layer_nodes:
                 # Right Neighbor
                 nid_right = mesh.node_map.get((ix + 1, iy, layer_id))
                 if nid_right is not None:
                     mesh.edges.append((nid, nid_right, g_lat_val))
+                    edges_created += 1
                     
                 # Top Neighbor
                 nid_top = mesh.node_map.get((ix, iy + 1, layer_id))
                 if nid_top is not None:
                     mesh.edges.append((nid, nid_top, g_lat_val))
+                    edges_created += 1
+            
+            if self.debug:
+                self._log(f"  Created {edges_created} lateral edges on layer {layer_id}")
 
         # 4. Vertical Connections (Vias & PTH)
         net = self.board.FindNet(net_name)
@@ -256,9 +280,12 @@ class Mesher:
             g_via = self._calculate_vertical_g(la, lb, stackup, diameter)
             mesh.edges.append((nid_a, nid_b, g_via))
 
-    def debug_plot(self, mesh):
+    def debug_plot(self, mesh, stackup=None):
         """
         Generates a 3D plot of the mesh and returns it as a wx.Bitmap.
+        Args:
+            mesh: Mesh object with node coordinates
+            stackup: Optional stackup dict to determine proper layer ordering
         """
         try:
             import matplotlib.pyplot as plt
@@ -277,13 +304,41 @@ class Mesher:
             
             has_results = hasattr(mesh, 'results') and mesh.results
             
+            # Build layer-to-Z mapping from stackup if available
+            layer_to_z = {}
+            if stackup and 'layer_order' in stackup:
+                # Use physical layer order from stackup (top to bottom)
+                layer_order = stackup['layer_order']
+                z_spacing = 1.0  # 1mm spacing between layers
+                z_top = 10.0
+                if self.debug:
+                    self._log(f"Using layer_order from stackup: {layer_order}")
+                for idx, layer_id in enumerate(layer_order):
+                    layer_to_z[layer_id] = z_top - (idx * z_spacing)
+                    if self.debug:
+                        self._log(f"  Layer {layer_id} -> Z={z_top - (idx * z_spacing)}")
+            elif stackup and 'copper' in stackup:
+                # Fallback: sort by layer ID
+                copper_layers = sorted(stackup['copper'].keys())
+                z_spacing = 1.0
+                z_top = 10.0
+                if self.debug:
+                    self._log(f"Fallback: using sorted copper layers: {copper_layers}")
+                for idx, layer_id in enumerate(copper_layers):
+                    layer_to_z[layer_id] = z_top - (idx * z_spacing)
+            else:
+                if self.debug:
+                    self._log("No stackup layer info available, using layer ID spacing")
+            
             for nid, (x, y, layer) in mesh.node_coords.items():
                 xs.append(x)
                 ys.append(y)
-                # Map layer ID to Z height pseudo
-                if layer == 0: z = 10
-                elif layer == 31: z = 0
-                else: z = 5
+                # Use stackup-based Z mapping if available, otherwise use layer ID
+                if layer in layer_to_z:
+                    z = layer_to_z[layer]
+                else:
+                    # Fallback: use layer ID with spacing
+                    z = 10 - (layer * 0.5)
                 zs.append(z)
                 
                 if has_results:
@@ -305,7 +360,39 @@ class Mesher:
             ax.set_zlabel('Layer (pseudo)')
             ax.invert_yaxis()
             
-            # Save to memory buffer
+            # Set equal aspect ratio for X and Y to show correct geometry proportions
+            # Leave Z independent so layer spacing doesn't make the plot too large
+            # Get axis limits
+            x_limits = ax.get_xlim3d()
+            y_limits = ax.get_ylim3d()
+            
+            x_range = x_limits[1] - x_limits[0]
+            y_range = y_limits[1] - y_limits[0]
+            
+            # Use max of X and Y range for both axes
+            max_xy_range = max(x_range, y_range)
+            
+            x_middle = (x_limits[0] + x_limits[1]) / 2
+            y_middle = (y_limits[0] + y_limits[1]) / 2
+            
+            ax.set_xlim3d([x_middle - max_xy_range/2, x_middle + max_xy_range/2])
+            ax.set_ylim3d([y_middle - max_xy_range/2, y_middle + max_xy_range/2])
+            # Leave Z limits as-is for natural layer spacing
+            
+            # Save to PNG file
+            import os
+            if hasattr(mesh, 'results') and mesh.results:
+                filename = 'debug_mesh_solved.png'
+            else:
+                filename = 'debug_mesh_presolved.png'
+            
+            # Get the plugin directory (mesh.py location)
+            output_path = os.path.join(os.path.dirname(__file__), filename)
+            plt.savefig(output_path, format='png', dpi=150, bbox_inches='tight')
+            if self.debug:
+                self._log(f"Saved mesh plot to {output_path}")
+            
+            # Save to memory buffer for UI
             buf = io.BytesIO()
             plt.savefig(buf, format='png', dpi=100)
             plt.close(fig) # Close figure to free memory
@@ -318,3 +405,4 @@ class Mesher:
         except Exception as e:
             print(f"Plotting failed: {e}")
             return None
+
