@@ -9,38 +9,59 @@ plugin_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if plugin_dir not in sys.path:
     sys.path.insert(0, plugin_dir)
 
-from extractor import GeometryExtractor
-from mesh import Mesher
-
-from solver import Solver
-from ui.setup_dialogs import SourceLoadDialog
+try:
+    from ..extractor import GeometryExtractor
+    from ..mesh import Mesher
+    from ..solver import Solver
+    from .power_tree_panel import PowerTreePanel
+except (ImportError, ValueError):
+    from extractor import GeometryExtractor
+    from mesh import Mesher
+    from solver import Solver
+    from ui.power_tree_panel import PowerTreePanel
 
 class KiPIDA_MainDialog(wx.Dialog):
     def __init__(self, parent):
         super(KiPIDA_MainDialog, self).__init__(parent, title="Ki-PIDA: Power Integrity Analyzer", 
                                                 style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         
-        self.SetSize((900, 700))
-        self.SetMinSize((600, 500))
+        self.SetSize((1000, 700))
+        self.SetMinSize((800, 500))
         
         self.board = pcbnew.GetBoard()
-        self.sl_items = [] # list of dict {'pads': [pad_objs], 'value': float, 'type': 'V' or 'I'}
         
         self._init_ui()
         self.Center()
         
-        self._load_nets()
-    
     def _init_ui(self):
         main_sizer = wx.BoxSizer(wx.VERTICAL)
         
         # 1. Notebook for tabs
         self.notebook = wx.Notebook(self)
         
-        # Tab 1: Configuration / Net Management
+        # Tab 1: Configuration (New Power Tree Panel)
         self.tab_config = wx.Panel(self.notebook)
-        self._init_config_tab(self.tab_config)
-        self.notebook.AddPage(self.tab_config, "Configuration")
+        self.power_tree = PowerTreePanel(self.tab_config, self.board)
+        
+        # Config Tab Layout
+        config_sizer = wx.BoxSizer(wx.VERTICAL)
+        config_sizer.Add(self.power_tree, 1, wx.EXPAND | wx.ALL, 5)
+        
+        # Global Settings (Grid Size, Debug)
+        sett_sizer = wx.BoxSizer(wx.HORIZONTAL)
+        
+        lbl_grid = wx.StaticText(self.tab_config, label="Mesh Resolution (mm):")
+        self.txt_grid_size = wx.TextCtrl(self.tab_config, value="0.1", size=(60, -1))
+        sett_sizer.Add(lbl_grid, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        sett_sizer.Add(self.txt_grid_size, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
+        
+        self.chk_debug = wx.CheckBox(self.tab_config, label="Enable Debug Log")
+        sett_sizer.Add(self.chk_debug, 0, wx.ALIGN_CENTER_VERTICAL)
+        
+        config_sizer.Add(sett_sizer, 0, wx.EXPAND | wx.ALL, 5)
+        self.tab_config.SetSizer(config_sizer)
+        
+        self.notebook.AddPage(self.tab_config, "Power Tree & Config")
         
         # Tab 2: Results
         self.tab_results = wx.Panel(self.notebook)
@@ -72,75 +93,8 @@ class KiPIDA_MainDialog(wx.Dialog):
         self.btn_run.Bind(wx.EVT_BUTTON, self.on_run)
         self.btn_cancel.Bind(wx.EVT_BUTTON, self.on_close)
     
-    def _init_config_tab(self, parent):
-        # Splitter: Left = Nets, Right = Sources/Loads
-        splitter = wx.BoxSizer(wx.HORIZONTAL)
-        
-        # Left: Net Selection
-        left_sizer = wx.BoxSizer(wx.VERTICAL)
-        lbl_net = wx.StaticText(parent, label="1. Select Net:")
-        self.net_list = wx.ListCtrl(parent, style=wx.LC_REPORT | wx.LC_SINGLE_SEL)
-        self.net_list.InsertColumn(0, "Net Name", width=250)
-        left_sizer.Add(lbl_net, 0, wx.ALL, 5)
-        left_sizer.Add(self.net_list, 1, wx.EXPAND | wx.ALL, 5)
-        
-        splitter.Add(left_sizer, 1, wx.EXPAND | wx.ALL, 5)
-        
-        # Right: Sources and Loads
-        right_sizer = wx.BoxSizer(wx.VERTICAL)
-        lbl_sl = wx.StaticText(parent, label="2. Define Sources & Loads:")
-        right_sizer.Add(lbl_sl, 0, wx.ALL, 5)
-        
-        self.sl_list = wx.ListCtrl(parent, style=wx.LC_REPORT)
-        self.sl_list.InsertColumn(0, "Type", width=60)
-        self.sl_list.InsertColumn(1, "Value", width=60)
-        self.sl_list.InsertColumn(2, "Location", width=150)
-        right_sizer.Add(self.sl_list, 1, wx.EXPAND | wx.ALL, 5)
-        
-        # Buttons
-        btn_sl_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.btn_add_src = wx.Button(parent, label="+ Voltage Src")
-        self.btn_add_load = wx.Button(parent, label="+ Current Load")
-        self.btn_remove_sl = wx.Button(parent, label="- Remove Selected")
-        self.btn_clear_sl = wx.Button(parent, label="Clear All")
-        
-        btn_sl_sizer.Add(self.btn_add_src, 0, wx.RIGHT, 5)
-        btn_sl_sizer.Add(self.btn_add_load, 0, wx.RIGHT, 5)
-        btn_sl_sizer.Add(self.btn_remove_sl, 0, wx.RIGHT, 5)
-        btn_sl_sizer.Add(self.btn_clear_sl, 0, wx.RIGHT, 5)
-        right_sizer.Add(btn_sl_sizer, 0, wx.EXPAND | wx.ALL, 5)
-        
-        # Grid Size Setting
-        grid_sett_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        lbl_grid = wx.StaticText(parent, label="Mesh Grid Size (mm):")
-        self.txt_grid_size = wx.TextCtrl(parent, value="0.1", size=(60, -1))
-        grid_sett_sizer.Add(lbl_grid, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
-        grid_sett_sizer.Add(self.txt_grid_size, 0, wx.ALIGN_CENTER_VERTICAL)
-        right_sizer.Add(grid_sett_sizer, 0, wx.EXPAND | wx.ALL, 5)
-        
-        # Debug Mode Setting
-        debug_sett_sizer = wx.BoxSizer(wx.HORIZONTAL)
-        self.chk_debug = wx.CheckBox(parent, label="Enable Debug Logging")
-        self.chk_debug.SetValue(False)
-        debug_sett_sizer.Add(self.chk_debug, 0, wx.ALIGN_CENTER_VERTICAL)
-        right_sizer.Add(debug_sett_sizer, 0, wx.EXPAND | wx.ALL, 5)
-        
-        splitter.Add(right_sizer, 1, wx.EXPAND | wx.ALL, 5)
-        
-        parent.SetSizer(splitter)
-        
-        # Events
-        self.btn_add_src.Bind(wx.EVT_BUTTON, self.on_add_source)
-        self.btn_add_load.Bind(wx.EVT_BUTTON, self.on_add_load)
-        self.btn_remove_sl.Bind(wx.EVT_BUTTON, self.on_remove_sl)
-        self.btn_clear_sl.Bind(wx.EVT_BUTTON, self.on_clear_sl)
-        
-        self.sl_list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self.on_edit_sl)
-
     def _init_results_tab(self, parent):
         sizer = wx.BoxSizer(wx.VERTICAL)
-        lbl = wx.StaticText(parent, label="Simulation Results")
-        sizer.Add(lbl, 0, wx.ALL, 5)
         
         # Splitter: Top=Text Stats, Bottom=Image
         self.result_splitter = wx.SplitterWindow(parent)
@@ -158,7 +112,6 @@ class KiPIDA_MainDialog(wx.Dialog):
         self.scrolled_img = wx.ScrolledWindow(self.pnl_image, style=wx.HSCROLL | wx.VSCROLL)
         self.scrolled_img.SetScrollRate(10, 10)
         
-        # result_image MUST be a child of scrolled_img
         self.result_image = wx.StaticBitmap(self.scrolled_img)
         
         scrolled_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -180,284 +133,178 @@ class KiPIDA_MainDialog(wx.Dialog):
         sizer.Add(self.log_ctrl, 1, wx.EXPAND | wx.ALL, 5)
         parent.SetSizer(sizer)
 
-    def _load_nets(self):
-        self.net_list.DeleteAllItems()
-        nets = self.board.GetNetsByName()
-        valid_nets = []
-        for name, net in nets.items():
-            s_name = str(name)
-            if s_name == "": continue
-            valid_nets.append(s_name)
-        valid_nets.sort()
-        for name in valid_nets:
-            self.net_list.Append([name])
-
     def log(self, msg):
         self.log_ctrl.AppendText(msg + "\n")
         
-    def get_selected_net(self):
-        sel = self.net_list.GetFirstSelected()
-        if sel == -1: return None
-        return self.net_list.GetItemText(sel)
-
-    def on_add_source(self, event):
-        net = self.get_selected_net()
-        if not net: 
-            wx.MessageBox("Select a Net first.")
-            return
-            
-        used = []
-        for item in self.sl_items: used.extend(item['pads'])
-            
-        dlg = SourceLoadDialog(self, f"Add Voltage Source for {net}", net, self.board, used_pads=used)
-        if dlg.ShowModal() == wx.ID_OK:
-            val = dlg.GetValue()
-            pads = dlg.GetSelectedPads()
-            if not pads:
-                wx.MessageBox("No pads selected.")
-                return
-            
-            self.sl_items.append({'type': 'V', 'value': val, 'pads': pads})
-            self._update_sl_list()
-        dlg.Destroy()
-        
-    def on_add_load(self, event):
-        net = self.get_selected_net()
-        if not net: 
-            wx.MessageBox("Select a Net first.")
-            return
-
-        used = []
-        for item in self.sl_items: used.extend(item['pads'])
-
-        dlg = SourceLoadDialog(self, f"Add Current Load for {net}", net, self.board, used_pads=used)
-        if dlg.ShowModal() == wx.ID_OK:
-            val = dlg.GetValue()
-            pads = dlg.GetSelectedPads()
-            if not pads: return
-            
-            self.sl_items.append({'type': 'I', 'value': val, 'pads': pads})
-            self._update_sl_list()
-        dlg.Destroy()
-
-    def on_edit_sl(self, event):
-        sel = self.sl_list.GetFirstSelected()
-        if sel == -1: return
-        
-        net = self.get_selected_net()
-        item = self.sl_items[sel]
-        
-        is_src = (item['type'] == 'V')
-        title = f"Edit {'Voltage Source' if is_src else 'Current Load'} for {net}"
-            
-        used = []
-        for it in self.sl_items: used.extend(it['pads'])
-        
-        dlg = SourceLoadDialog(self, title, net, self.board, 
-                               used_pads=used, 
-                               initial_value=item['value'], 
-                               initial_pads=item['pads'])
-        
-        if dlg.ShowModal() == wx.ID_OK:
-            val = dlg.GetValue()
-            pads = dlg.GetSelectedPads()
-            if not pads:
-                wx.MessageBox("No pads selected.")
-                return
-            
-            # Update memory - type stays the same!
-            item['value'] = val
-            item['pads'] = pads
-            self._update_sl_list()
-            
-        dlg.Destroy()
-
-    def on_remove_sl(self, event):
-        sel = self.sl_list.GetFirstSelected()
-        if sel == -1: return
-        self.sl_items.pop(sel)
-        self._update_sl_list()
-        
-    def on_clear_sl(self, event):
-        self.sl_items = []
-        self._update_sl_list()
-
-    def _update_sl_list(self):
-        self.sl_list.DeleteAllItems()
-        for item in self.sl_items:
-            is_src = (item['type'] == 'V')
-            type_str = "Voltage" if is_src else "Load"
-            unit = "V" if is_src else "A"
-            loc = f"{len(item['pads'])} pads"
-            self.sl_list.Append([type_str, f"{item['value']} {unit}", loc])
-
-        # Lock net selection if items exist
-        has_items = (len(self.sl_items) > 0)
-        self.net_list.Enable(not has_items)
-
     def on_run(self, event):
-        net_name = self.get_selected_net()
-        if not net_name: return
-        
-        self.notebook.SetSelection(2) # Show Log
+        rail = self.power_tree.active_rail
+        if not rail:
+            wx.MessageBox("Please select a Power Rail to simulate.")
+            return
+            
+        net_name = rail.net_name
+        self.notebook.SetSelection(2) # Switch to Log
         self.log(f"--- Starting Simulation for {net_name} ---")
+        self.log(f"Nominal Voltage: {rail.nominal_voltage} V")
         
-        if not self.sl_items:
-            self.log("WARNING: No sources or loads defined. Mesh will be generated but results will be zero.")
-        
+        if not rail.sources:
+             self.log("WARNING: No Voltage Sources defined. Simulation will likely fail or return all zeros.")
+
         try:
-            # 1. Extraction
             debug_mode = self.chk_debug.GetValue()
-            if debug_mode:
-                self.log("Debug mode enabled - detailed diagnostics will follow...")
+            
+            # --- 1. Extraction ---
             extractor = GeometryExtractor(self.board, debug=debug_mode, log_callback=self.log)
             stackup = extractor.get_board_stackup()
             geo = extractor.get_net_geometry(net_name)
+            
             if not geo:
-                self.log("No geometry found.")
+                self.log("No geometry found for net.")
                 return
 
-            self.log(f"Geometry extracted. Layers: {list(geo.keys())}")
-            
-            # Visualize extracted geometry if debug mode
+            # Plot Geometry (Debug)
             if debug_mode:
-                self.log("Generating geometry visualization...")
-                try:
-                    import wx
-                    geo_buf = extractor.plot_geometry(geo)
-                    if geo_buf:
-                        image = wx.Image(geo_buf, wx.BITMAP_TYPE_PNG)
-                        geo_bitmap = wx.Bitmap(image)
-                        # Show in results tab temporarily
-                        self.result_image.SetBitmap(geo_bitmap)
-                        self.scrolled_img.GetSizer().Layout()
-                        self.scrolled_img.FitInside()
-                        self.notebook.SetSelection(1)  # Show Results tab
-                        self.log("Geometry plot displayed in Results tab.")
-                except Exception as e:
-                    self.log(f"Geometry plot failed: {e}")
-            
-            # 2. Meshing
-            self.log("Generating Mesh...")
+                 self._debug_plot_geo(extractor, geo)
+
+            # --- 2. Meshing ---
             try:
                 gs = float(self.txt_grid_size.GetValue())
-                if gs < 0.01: gs = 0.01 # Safety
-            except:
-                gs = 0.1
-                
+                if gs < 0.01: gs = 0.01
+            except: gs = 0.1
+            
             mesher = Mesher(self.board, debug=debug_mode, log_callback=self.log)
             mesh = mesher.generate_mesh(net_name, geo, stackup, grid_size_mm=gs)
-            self.log(f"Mesh generated: {len(mesh.nodes)} nodes, {len(mesh.edges)} edges.")
+            self.log(f"Mesh: {len(mesh.nodes)} nodes, {len(mesh.edges)} edges.")
             
-            # Show mesh visualization before solving if debug mode
+            if len(mesh.nodes) == 0:
+                self.log("Error: Mesh has 0 nodes.")
+                return
+
             if debug_mode:
-                self.log("Generating pre-solve mesh visualization...")
-                try:
-                    import wx
-                    mesh_bitmap = mesher.debug_plot(mesh, stackup=stackup)
-                    if mesh_bitmap:
-                        self.result_image.SetBitmap(mesh_bitmap)
-                        self.scrolled_img.GetSizer().Layout()
-                        self.scrolled_img.FitInside()
-                        self.notebook.SetSelection(1)  # Show Results tab
-                        self.log("Pre-solve mesh plot displayed (no voltage data yet).")
-                except Exception as e:
-                    self.log(f"Pre-solve mesh plot failed: {e}")
-            
-            # 3. Solver Setup
-            # Need to map Source/Load Pads to Mesh Nodes
-            # Mesh has `node_coords` { nid: (x,y,layer) }
-            # and `node_map` { (ix, iy, layer): nid }
-            
+                self._debug_plot_mesh(mesher, mesh, stackup)
+
+            # --- 3. Map Sources/Loads to Nodes ---
             solver_sources = []
             solver_loads = []
             
             grid_step = mesh.grid_step
             origin = mesh.grid_origin
             
-            # Helper to find node closest to pad
-            def find_nodes_for_pads(pads):
-                found_nodes = []
-                for pad in pads:
-                    pos = pad.GetPosition()
-                    px = pcbnew.ToMM(pos.x)
-                    py = pcbnew.ToMM(pos.y)
+            def get_mesh_nodes_for_component_pads(ref_des, pad_names):
+                """Helper to find mesh nodes corresponding to specific pads of a component."""
+                nodes = []
+                fp = self.board.FindFootprintByReference(ref_des)
+                if not fp:
+                    self.log(f"Warning: Footprint {ref_des} not found.")
+                    return []
+                
+                for pad_name in pad_names:
+                    pad = fp.FindPadByNumber(pad_name)
+                    if not pad: continue
                     
-                    # Target grid index
+                    pos = pad.GetPosition()
+                    px, py = pcbnew.ToMM(pos.x), pcbnew.ToMM(pos.y)
+                    
+                    # Convert to grid
                     tx = int(round((px - origin[0]) / grid_step))
                     ty = int(round((py - origin[1]) / grid_step))
                     
-                    # Search 3x3 neighborhood for ANY node on ANY layer
-                    node_found = False
+                    # Search neighborhood
+                    # TODO: Properly use pad bounding box? MVP: 3x3 search
+                    found_for_pad = False
                     for dx in [-1, 0, 1]:
                         for dy in [-1, 0, 1]:
                             ix, iy = tx + dx, ty + dy
-                            for layer in range(32): # All logical copper layers
+                            # Check all layers
+                            for layer in range(32): # iterate reasonably
                                 nid = mesh.node_map.get((ix, iy, layer))
                                 if nid is not None:
-                                    found_nodes.append(nid)
-                                    node_found = True
-                    
-                    if not node_found:
-                        self.log(f"Warning: Pad at ({px:.2f}, {py:.2f}) [Grid {tx},{ty}] not on mesh nodes.")
-                    else:
-                        # Log success for debug
-                        pass
+                                    nodes.append(nid)
+                                    found_for_pad = True
+                    if not found_for_pad and debug_mode:
+                        self.log(f"  Pad {ref_des}.{pad_name} at ({px:.2f},{py:.2f}) not on mesh.")
                         
-                return list(set(found_nodes)) # Unique nodes
+                return list(set(nodes))
 
-            # Prepare Sources/Loads
-            for item in self.sl_items:
-                nodes = find_nodes_for_pads(item['pads'])
-                if not nodes: continue
+            # Assemble Sources
+            for src in rail.sources:
+                nodes = get_mesh_nodes_for_component_pads(src.component_ref.ref_des, src.pad_names)
+                if not nodes:
+                    self.log(f"Warning: Source {src.component_ref.ref_des} has no connected mesh nodes.")
+                    continue
                 
-                if item['type'] == 'V':
-                    # Voltage source: Apply V to all found nodes
-                    for nid in nodes:
-                        solver_sources.append({'node_id': nid, 'voltage': item['value']})
-                else:
-                    # Current source: Divide I by number of nodes found
-                    i_per_node = item['value'] / len(nodes)
-                    for nid in nodes:
-                        solver_loads.append({'node_id': nid, 'current': i_per_node})
+                # Voltage defined at Rail level
+                v_set = rail.nominal_voltage
+                for nid in nodes:
+                    solver_sources.append({'node_id': nid, 'voltage': v_set})
+                    
+            # Assemble Loads
+            for load in rail.loads:
+                nodes = get_mesh_nodes_for_component_pads(load.component_ref.ref_des, load.pad_names)
+                if not nodes:
+                    self.log(f"Warning: Load {load.component_ref.ref_des} has no connected mesh nodes.")
+                    continue
+                
+                # Distribute current
+                # Default UNIFORM: Total / Node Count
+                i_per_node = load.total_current / len(nodes)
+                for nid in nodes:
+                    solver_loads.append({'node_id': nid, 'current': i_per_node})
 
-            # 4. Solve
+            # --- 4. Solve ---
             if not solver_sources:
-                 self.log("Error: No Voltage Sources defined! Singular matrix.")
+                self.log("Error: No valid source nodes found on mesh. Cannot solve.")
             else:
-                self.log("Solving Linear System...")
+                self.log("Solving...")
                 solver = Solver()
                 results = solver.solve(mesh, solver_sources, solver_loads)
-                self.log("Solution Complete.")
                 
-                # Show Results
-                if results:
-                    v_vals = list(results.values())
-                    v_min = min(v_vals)
-                    v_max = max(v_vals)
-                    drop = v_max - v_min
-                    r_str = f"Min V: {v_min:.4f} V\nMax V: {v_max:.4f} V\nDrop: {drop:.4f} V"
-                    self.result_text.SetValue(r_str)
-                    
-                # 5. Visualize
+                # Stats
+                v_vals = list(results.values())
+               
+                v_min = min(v_vals)
+                v_max = max(v_vals)
+                drop_abs = v_max - v_min
+                drop_pct = (drop_abs / rail.nominal_voltage * 100) if rail.nominal_voltage > 0 else 0
+                
+                res_str = f"Rail: {net_name}\n"
+                res_str += f"Nominal: {rail.nominal_voltage} V\n"
+                res_str += f"Min V: {v_min:.4f} V\n"
+                res_str += f"Max V: {v_max:.4f} V\n"
+                res_str += f"Max Drop: {drop_abs:.4f} V ({drop_pct:.2f}%)"
+                
+                self.result_text.SetValue(res_str)
+                self.log("Simulation Success.")
+                
+                # --- 5. Visualize ---
                 mesh.results = results
-                self.log("Generating Plot...")
-                bitmap = mesher.debug_plot(mesh, stackup=stackup)
-                
+                bitmap = mesher.debug_plot(mesh, stackup)
                 if bitmap:
                     self.result_image.SetBitmap(bitmap)
-                    self.scrolled_img.GetSizer().Layout()
                     self.scrolled_img.FitInside()
-                    self.log("Results plot generated in-memory.")
-                else:
-                    self.log("Failed to generate plot bitmap.")
-                
-                self.notebook.SetSelection(1) # Results tab
-            
+                    self.notebook.SetSelection(1) # Results Tab
+
         except Exception as e:
-            self.log(f"Error: {e}")
+            self.log(f"Exception: {e}")
             import traceback
             traceback.print_exc()
+
+    def _debug_plot_geo(self, extractor, geo):
+        try:
+            buf = extractor.plot_geometry(geo)
+            if buf:
+                img = wx.Image(buf, wx.BITMAP_TYPE_PNG)
+                self.result_image.SetBitmap(wx.Bitmap(img))
+                self.scrolled_img.FitInside()
+        except: pass
+
+    def _debug_plot_mesh(self, mesher, mesh, stackup):
+        try:
+            bmp = mesher.debug_plot(mesh, stackup)
+            if bmp:
+                self.result_image.SetBitmap(bmp)
+                self.scrolled_img.FitInside()
+        except: pass
 
     def on_close(self, event):
         self.EndModal(wx.ID_CANCEL)
