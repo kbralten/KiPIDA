@@ -52,11 +52,18 @@ class GeometryExtractor:
             if self.debug:
                 self.logger.debug("Could not detect KiCad version")
 
+    # Cache for stackup data
+    _stackup_cache = None
+
     def get_board_stackup(self):
         """
         Extracts physical stackup properties.
         Returns a dict with copper data and substrate segments.
         """
+        # Return cached stackup if available
+        if self._stackup_cache is not None:
+            return self._stackup_cache
+            
         rho_copper = 1.68e-5 # Ohm-mm
         copper_data = {}
         layer_order = []  # Preserve physical layer order top-to-bottom
@@ -88,6 +95,7 @@ class GeometryExtractor:
                 self.logger.debug("Extracting board stackup from GetStackupDescriptor()...")
             
             last_copper = None
+            last_copper = None
             # Use GetList() to get stackup items
             try:
                 try:
@@ -99,44 +107,56 @@ class GeometryExtractor:
                         self.logger.warning(f"GetList() not available: {e}")
                     raise e
                     
-                for item in items_list:
-                    lid = item.GetLayerId()
+                for i, item in enumerate(items_list):
+                    # Check item type
+                    item_type = item.GetType()
                     thickness = pcbnew.ToMM(item.GetThickness())
                     
-                    if pcbnew.IsCopperLayer(lid):
-                        layer_name = self.board.GetLayerName(lid)
+                    if item_type == pcbnew.BS_ITEM_TYPE_COPPER:
+                        lid = item.GetBrdLayerId()
+                        layer_name = item.GetLayerName() # Get user-defined name or default
+                        
+                        # Fallback for name if needed
+                        if not layer_name and self.board:
+                             layer_name = self.board.GetLayerName(lid)
+                             
                         copper_data[lid] = {
                             'name': layer_name,
                             'thickness_mm': thickness if thickness > 0 else 0.035
                         }
                         layer_order.append(lid)
+                        
+                        # Link pending substrate to this copper layer
+                        if len(substrates) > 0 and substrates[-1]['between'][1] is None:
+                            substrates[-1]['between'][1] = lid
+                            if self.debug:
+                                self.logger.debug(f"  Substrate links {substrates[-1]['between'][0]} to {lid}")
+
                         if self.debug:
-                            self.logger.debug(f"  Copper layer {lid} ({layer_name}): thickness={copper_data[lid]['thickness_mm']:.4f}mm")
+                            self.logger.debug(f"  Item {i}: Copper layer {lid} ({layer_name}), thickness={thickness:.4f}mm")
                         last_copper = lid
-                    elif lid == -1:  # substrate/dielectric
+                        
+                    elif item_type == pcbnew.BS_ITEM_TYPE_DIELECTRIC:
+                        # Dielectric layer
                         if last_copper is not None:
+                            # Start a new substrate entry or append to existing one if we haven't hit the next copper yet
                             if len(substrates) == 0 or substrates[-1]['between'][1] is not None:
-                                substrates.append({'thickness_mm': thickness, 'between': [last_copper, None]})
+                                substrates.append({
+                                    'thickness_mm': thickness, 
+                                    'between': [last_copper, None],
+                                    'material': item.GetMaterial(),
+                                    'epsilon_r': item.GetEpsilonR()
+                                })
                                 if self.debug:
-                                    self.logger.debug(f"  Substrate after layer {last_copper}: thickness={thickness:.4f}mm")
+                                    self.logger.debug(f"  Item {i}: Substrate after {last_copper}, thickness={thickness:.4f}mm, mat={item.GetMaterial()}")
                             else:
                                 substrates[-1]['thickness_mm'] += thickness
                                 if self.debug:
-                                    self.logger.debug(f"  Added {thickness:.4f}mm to previous substrate, total={substrates[-1]['thickness_mm']:.4f}mm")
+                                    self.logger.debug(f"  Item {i}: Added {thickness:.4f}mm to substrate, total={substrates[-1]['thickness_mm']:.4f}mm")
                 
-                # Link substrates
-                for sub in substrates:
-                    start_lid = sub['between'][0]
-                    found_start = False
-                    for item in items_list:
-                        lid = item.GetLayerId()
-                        if lid == start_lid:
-                            found_start = True
-                        elif found_start and pcbnew.IsCopperLayer(lid):
-                            sub['between'][1] = lid
-                            if self.debug:
-                                self.logger.debug(f"  Substrate links layer {start_lid} to {lid}")
-                            break
+                if self.debug:
+                    self.logger.debug(f"processed {len(items_list)} items from stackup list") 
+                
             except Exception as list_error:
                 if self.debug:
                     self.logger.warning(f"GetList() extraction failed: {list_error}, using fallback")
@@ -183,12 +203,15 @@ class GeometryExtractor:
                 layer_order.remove(back_copper)
                 layer_order.append(back_copper)
 
-        return {
+        result = {
             'copper': copper_data,
             'layer_order': layer_order,
             'substrate': substrates,
             'resistivity': rho_copper
         }
+        
+        self._stackup_cache = result
+        return result
 
     def get_net_geometry(self, net_name):
         """
