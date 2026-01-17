@@ -19,6 +19,19 @@ Ki-PIDA democratizes high-end PI analysis by:
 - **Multi-Physics Support:** Coupled electro-thermal simulation to account for temperature-dependent copper resistivity.
 - **Visual Feedback:** Interactive heatmaps for voltage and current density rendered as overlays on the PCB canvas.
 
+## 📦 Installation
+
+To run Ki-PIDA on Windows, you must install the required dependencies into the Python environment bundled with KiCad.
+
+1.  Open the **KiCad 9.0 Command Prompt** from your Start Menu.
+2.  Run the following command to install the required libraries:
+    ```bash
+    pip install numpy scipy shapely matplotlib pypardiso
+    ```
+
+> [!TIP]
+> **PyPardiso** is highly recommended as it provides a multi-threaded parallel solver that is significantly faster for large PCB designs.
+
 ## 📖 How to Use
 
 1.  **Layout & Netlist:** Complete your power planes and traces in Pcbnew.
