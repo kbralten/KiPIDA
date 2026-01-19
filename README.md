@@ -29,6 +29,7 @@ Ki-PIDA communicates with KiCad via the new IPC-based API.
 2. Go to **Preferences** > **Common**.
 3. Under the **API** section, check the box for **Enable API**.
 4. Restart KiCad if prompted.
+![alt text](image-3.png)
 
 ### 2. Install the Plugin
 1. Locate your KiCad plugins directory:
@@ -56,7 +57,7 @@ Upon launch, Ki-PIDA automatically scans your board for likely power rails (base
 - **Set Voltage**: Select your net (e.g., `+3V3`). In **Rail Properties**, enter the **Nominal Voltage (V)** (e.g., `3.3`).
 - **Manual Addition**: If a specific net was not auto-discovered, click **Add Manual Net** to select it from the full netlist.
 
-![Power Tree & Config](image.png)
+![alt text](image-4.png)
 
 ### 3. Add Sources (VRMs / Power Inputs)
 Identify where power enters this net:
@@ -73,7 +74,7 @@ Identify the components consuming power:
 4. Check the **Pads** through which the current is drawn.
 5. Click **OK**.
 
-![Add a load UI](image-1.png)
+![alt text](image-5.png)
 
 ### 5. Run the Simulation
 Before running, you can adjust the **Mesh Resolution (mm)**. A value of `0.1mm` is usually sufficient for accurate results.
