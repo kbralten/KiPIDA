@@ -1,10 +1,27 @@
-import pcbnew
 import logging
+import math
 try:
     from shapely.geometry import LineString, Polygon, MultiPolygon, Point, box
     from shapely.ops import unary_union
+    from shapely import affinity
 except ImportError:
-    LineString = Polygon = MultiPolygon = Point = box = unary_union = None
+    LineString = Polygon = MultiPolygon = Point = box = unary_union = affinity = None
+
+try:
+    import kipy
+    import kipy.board
+    import os
+    import tempfile
+    import sys
+    HAS_KIPY = True
+except ImportError:
+    HAS_KIPY = False
+
+# Constants mapping (approximate)
+# Needs to be verified against kipy enums
+# For now defining local helpers
+def to_mm(val_nm):
+    return val_nm / 1e6
 
 class GeometryExtractor:
     def __init__(self, board, debug=False, log_callback=None):
@@ -34,23 +51,30 @@ class GeometryExtractor:
                 handler = logging.StreamHandler()
                 handler.setFormatter(logging.Formatter('[%(name)s] %(levelname)s: %(message)s'))
                 self.logger.addHandler(handler)
-        if LineString is None:
-            raise ImportError("The 'shapely' library is required for Ki-PIDA but was not found.")
-        
-        # Detect KiCad version for API compatibility
-        self._detect_kicad_version()
-    
-    def _detect_kicad_version(self):
-        """Detect KiCad version for API compatibility."""
-        try:
-            version_str = pcbnew.GetBuildVersion()
-            self.kicad_version = version_str
-            if self.debug:
-                self.logger.debug(f"KiCad version detected: {version_str}")
-        except:
-            self.kicad_version = "unknown"
-            if self.debug:
-                self.logger.debug("Could not detect KiCad version")
+    def _get_val(self, obj, attr_name, default=None):
+        """Robustly get attribute value from object (property or getter)."""
+        if obj is None: return default
+        if hasattr(obj, attr_name):
+            val = getattr(obj, attr_name)
+            if val is not None: return val
+        for prefix in ["get_", ""]:
+            method_name = prefix + attr_name
+            if hasattr(obj, method_name):
+                try:
+                    val = getattr(obj, method_name)()
+                    if val is not None: return val
+                except: pass
+        return default
+
+    def _get_board_items(self, attr_name):
+        """Robustly get items from board (property or getter)."""
+        if hasattr(self.board, attr_name):
+            return getattr(self.board, attr_name)
+        method_name = f"get_{attr_name}"
+        if hasattr(self.board, method_name):
+            try: return getattr(self.board, method_name)()
+            except: pass
+        return []
 
     # Cache for stackup data
     _stackup_cache = None
@@ -63,146 +87,159 @@ class GeometryExtractor:
         # Return cached stackup if available
         if self._stackup_cache is not None:
             return self._stackup_cache
-            
-        rho_copper = 1.68e-5 # Ohm-mm
-        copper_data = {}
-        layer_order = []  # Preserve physical layer order top-to-bottom
-        substrates = []
         
-        try:
-            settings = self.board.GetDesignSettings()
-            if self.debug:
-                self.logger.debug(f"DesignSettings type: {type(settings)}")
-                if hasattr(settings, 'm_HasStackup'):
-                    self.logger.debug(f"m_HasStackup = {settings.m_HasStackup}")
-            
-            stackup = settings.GetStackupDescriptor()
-            if self.debug:
-                self.logger.debug(f"StackupDescriptor type: {type(stackup)}")
-                # Show ALL methods (not just Stackup-related)
-                all_methods = [m for m in dir(stackup) if not m.startswith('_')]
-                self.logger.debug(f"All stackup methods: {all_methods}")
-                
-                # Try various size methods
-                for method_name in ['size', 'Size', 'count', 'Count', 'length', 'GetCount']:
-                    if hasattr(stackup, method_name):
-                        try:
-                            result = getattr(stackup, method_name)()
-                            self.logger.debug(f"stackup.{method_name}() = {result}")
-                        except Exception as e:
-                            self.logger.debug(f"stackup.{method_name}() failed: {e}")
-                
-                self.logger.debug("Extracting board stackup from GetStackupDescriptor()...")
-            
-            last_copper = None
-            last_copper = None
-            # Use GetList() to get stackup items
+        # Try Protobuf API first
+        if HAS_KIPY:
             try:
-                try:
-                    items_list = stackup.GetList()
-                    if self.debug:
-                        self.logger.debug(f"stackup.GetList() returned: {type(items_list)}, len={len(items_list)}")
-                except AttributeError as e:
-                    if self.debug:
-                        self.logger.warning(f"GetList() not available: {e}")
-                    raise e
-                    
-                for i, item in enumerate(items_list):
-                    # Check item type
-                    item_type = item.GetType()
-                    thickness = pcbnew.ToMM(item.GetThickness())
-                    
-                    if item_type == pcbnew.BS_ITEM_TYPE_COPPER:
-                        lid = item.GetBrdLayerId()
-                        layer_name = item.GetLayerName() # Get user-defined name or default
-                        
-                        # Fallback for name if needed
-                        if not layer_name and self.board:
-                             layer_name = self.board.GetLayerName(lid)
-                             
-                        copper_data[lid] = {
-                            'name': layer_name,
-                            'thickness_mm': thickness if thickness > 0 else 0.035
-                        }
-                        layer_order.append(lid)
-                        
-                        # Link pending substrate to this copper layer
-                        if len(substrates) > 0 and substrates[-1]['between'][1] is None:
-                            substrates[-1]['between'][1] = lid
-                            if self.debug:
-                                self.logger.debug(f"  Substrate links {substrates[-1]['between'][0]} to {lid}")
-
-                        if self.debug:
-                            self.logger.debug(f"  Item {i}: Copper layer {lid} ({layer_name}), thickness={thickness:.4f}mm")
-                        last_copper = lid
-                        
-                    elif item_type == pcbnew.BS_ITEM_TYPE_DIELECTRIC:
-                        # Dielectric layer
-                        if last_copper is not None:
-                            # Start a new substrate entry or append to existing one if we haven't hit the next copper yet
-                            if len(substrates) == 0 or substrates[-1]['between'][1] is not None:
-                                substrates.append({
-                                    'thickness_mm': thickness, 
-                                    'between': [last_copper, None],
-                                    'material': item.GetMaterial(),
-                                    'epsilon_r': item.GetEpsilonR()
-                                })
-                                if self.debug:
-                                    self.logger.debug(f"  Item {i}: Substrate after {last_copper}, thickness={thickness:.4f}mm, mat={item.GetMaterial()}")
-                            else:
-                                substrates[-1]['thickness_mm'] += thickness
-                                if self.debug:
-                                    self.logger.debug(f"  Item {i}: Added {thickness:.4f}mm to substrate, total={substrates[-1]['thickness_mm']:.4f}mm")
-                
+                stackup = self._get_stackup_protobuf()
+                if stackup:
+                    self._stackup_cache = stackup
+                    return stackup
+            except Exception as e:
+                msg = f"Protobuf API stackup extraction failed: {e}. Falling back to defaults."
                 if self.debug:
-                    self.logger.debug(f"processed {len(items_list)} items from stackup list") 
-                
-            except Exception as list_error:
-                if self.debug:
-                    self.logger.warning(f"GetList() extraction failed: {list_error}, using fallback")
-                raise list_error
-                
-        except Exception as e:
-            # Fallback: Just get copper layers and assume default dielectric
-            print(f"Detailed stackup extraction failed: {e}. Using fallbacks.")
-            seq = self.board.GetEnabledLayers()
-            enabled_layers = sorted(list(seq.Seq()))
-            
-            last_lid = None
-            for lid in enabled_layers:
-                if pcbnew.IsCopperLayer(lid):
-                    # Try to get individual thickness if board.GetLayerThickness exists (KiCad 7+)
-                    try:
-                        thickness = pcbnew.ToMM(self.board.GetLayerThickness(lid))
-                    except:
-                        thickness = 0.035
-                        
-                    copper_data[lid] = {
-                        'name': self.board.GetLayerName(lid),
-                        'thickness_mm': thickness if thickness > 0 else 0.035
-                    }
-                    layer_order.append(lid)  # Add to layer_order in fallback path too
-                    if last_lid is not None:
-                        # Add a default 1.0mm dielectric between layers
-                        substrates.append({'thickness_mm': 1.0, 'between': [last_lid, lid]})
-                    last_lid = lid
+                    self.logger.warning(msg)
+                else:
+                    print(msg)
         
-        # Ensure back copper is at the end of layer_order
-        # Layer 31 is standard B.Cu, but some boards use other IDs like layer 2
-        if layer_order:
-            # Find back copper layer (highest physical layer)
-            back_copper = None
-            for lid in layer_order:
-                layer_name = copper_data.get(lid, {}).get('name', '')
-                if 'B.Cu' in layer_name or 'Back' in layer_name:
-                    back_copper = lid
-                    break
-            
-            # If found and not already last, move to end
-            if back_copper and layer_order[-1] != back_copper:
-                layer_order.remove(back_copper)
-                layer_order.append(back_copper)
+        return self._get_stackup_defaults()
 
+    def _get_stackup_protobuf(self):
+        """Extract stackup using the new KiCad Protobuf API (kipy)."""
+        if self.debug:
+            self.logger.debug("Attempting stackup extraction via Protobuf API (kicad-python)...")
+            
+        try:
+            # Note: We assume self.board is already a kipy Board object connected to KiCad
+            if not self.board:
+                return None
+            
+            stackup = self.board.get_stackup()
+            
+            rho_copper = 1.68e-5 # Ohm-mm
+            copper_data = {}
+            layer_order = []
+            substrates = []
+            
+            last_copper = None
+            
+            # Helper to find dielectric constant
+            def get_epsilon_r(dielectric_layer):
+                # Check for sub-layers (KiCad 9 structure)
+                # BoardStackupDielectricLayer -> layers (list of BoardStackupDielectricProperties)
+                if hasattr(dielectric_layer, 'layers') and dielectric_layer.layers:
+                    return dielectric_layer.layers[0].epsilon_r
+                return 4.4 # Default FR4
+            
+            def get_material(dielectric_layer):
+                if hasattr(dielectric_layer, 'layers') and dielectric_layer.layers:
+                    return dielectric_layer.layers[0].material_name
+                return "FR4"
+
+            # Iterate layers
+            for i, layer in enumerate(stackup.layers):
+                # layer is BoardStackupLayer
+                
+                type_val = layer.type
+                thickness_mm = layer.thickness / 1e6
+                
+                is_copper = False
+                is_dielectric = False
+                
+                # Check layer type
+                # type 1 = Copper, type 2 = Dielectric
+                if type_val == 1 or str(type_val) == 'BS_COPPER' or 'COPPER' in str(type_val):
+                    is_copper = True
+                elif type_val == 2 or str(type_val) == 'BS_DIELECTRIC' or 'DIELECTRIC' in str(type_val):
+                    is_dielectric = True
+                # Ignore other types (silkscreen, mask, paste, etc.)
+
+                if is_copper:
+                    lid = layer.layer # The actual KiCad Layer ID 
+                    name = layer.user_name
+                    
+                    copper_data[lid] = {
+                        'name': name,
+                        'thickness_mm': thickness_mm if thickness_mm > 0 else 0.035
+                    }
+                    layer_order.append(lid)
+                    
+                    # Link pending substrate
+                    if len(substrates) > 0 and substrates[-1]['between'][1] is None:
+                        substrates[-1]['between'][1] = lid
+                        
+                    last_copper = lid
+                    
+                elif is_dielectric:
+                    if last_copper is not None:
+                        if len(substrates) == 0 or substrates[-1]['between'][1] is not None:
+                            d_layer = layer.dielectric
+                            eps = get_epsilon_r(d_layer)
+                            mat = get_material(d_layer)
+                            
+                            substrates.append({
+                                'thickness_mm': thickness_mm,
+                                'between': [last_copper, None],
+                                'material': mat,
+                                'epsilon_r': eps
+                            })
+                        else:
+                            substrates[-1]['thickness_mm'] += thickness_mm
+
+            result = {
+                'copper': copper_data,
+                'layer_order': layer_order,
+                'substrate': substrates,
+                'resistivity': rho_copper
+            }
+            
+            if self.debug:
+                self.logger.debug("Extracted Stackup Details:")
+                for lid in layer_order:
+                    data = copper_data[lid]
+                    self.logger.debug(f"  Copper Layer {lid} ('{data['name']}'): thickness = {data['thickness_mm']:.4f} mm")
+                
+                for i, sub in enumerate(substrates):
+                    l1, l2 = sub['between']
+                    n1 = copper_data.get(l1, {}).get('name', str(l1))
+                    n2 = copper_data.get(l2, {}).get('name', str(l2)) if l2 is not None else "Bottom"
+                    self.logger.debug(f"  Dielectric {i+1} (between {n1} and {n2}): thickness = {sub['thickness_mm']:.4f} mm, eps_r = {sub['epsilon_r']:.2f}")
+            
+            return result
+        except Exception as e:
+            msg = str(e)
+            if "Timed out" in msg:
+                 self.logger.warning("Protobuf API timed out (Deadlock). Falling back.")
+            if self.debug:
+                self.logger.debug(f"Protobuf extraction error: {e}")
+            raise e
+
+    def _get_stackup_defaults(self):
+        """Returns a default 2-layer stackup (Top/Bottom Copper, FR4 dielectric)."""
+        msg = "Using hardcoded default stackup (2-Layer)."
+        if self.debug:
+            self.logger.warning(msg)
+
+        rho_copper = 1.68e-5 # Ohm-mm
+        
+        # Default to F.Cu (0) and B.Cu (31)
+        f_cu_id = 0
+        b_cu_id = 31
+        
+        copper_data = {
+            f_cu_id: {'name': 'F.Cu', 'thickness_mm': 0.035},
+            b_cu_id: {'name': 'B.Cu', 'thickness_mm': 0.035}
+        }
+        
+        layer_order = [f_cu_id, b_cu_id]
+        
+        substrates = [{
+            'thickness_mm': 1.6,
+            'between': [f_cu_id, b_cu_id],
+            'material': 'FR4',
+            'epsilon_r': 4.4
+        }]
+        
         result = {
             'copper': copper_data,
             'layer_order': layer_order,
@@ -218,335 +255,357 @@ class GeometryExtractor:
         Extracts and merges geometry for a specific net.
         Returns a dictionary: { layer_id: shapely.geometry.Polygon }
         """
-        net = self.board.FindNet(net_name)
-        if net is None:
-            return {}
-        
-        net_code = net.GetNetCode()
         layer_shapes = {} # { layer_id: [shapely_objects] }
 
         def add_shape(layer, shape):
             if layer not in layer_shapes:
                 layer_shapes[layer] = []
             layer_shapes[layer].append(shape)
-
+            
+        def is_copper(lid):
+            stackup = self.get_board_stackup()
+            return lid in stackup['copper']
+            
         # 1. Process Tracks
-        track_count = 0
-        for track in self.board.GetTracks():
-            if track.GetNetCode() != net_code:
-                continue
-            
-            # Tracks and Vias are in the same list. 
-            # Vias usually have layer = Undefined or encompass multple.
-            # We only care about conductive traces on specific layers here.
-            # Vias are handled separately in mesh generation (usually). 
-            # NOTE: But for geometry, a via pad is effectively a circle on all connected layers.
-            
-            if isinstance(track, pcbnew.PCB_VIA):
-                # Add via annular rings to all connected layers
-                via = track
-                top_layer = via.TopLayer()
-                bottom_layer = via.BottomLayer()
-                # Get all copper layers between top and bottom
-                # We can iterate our stackup_data keys
-                
-                # Check layers
-                radius_mm = pcbnew.ToMM(via.GetWidth()) / 2.0
-                pos = via.GetPosition()
-                x_mm = pcbnew.ToMM(pos.x)
-                y_mm = pcbnew.ToMM(pos.y)
-                via_shape = Point(x_mm, y_mm).buffer(radius_mm)
-                
-                # Add via copper to all layers it touches
-                # Get layer set and iterate through it
-                via_count = 0
-                layer_set = via.GetLayerSet()
-                for layer_id in layer_set.Seq():
-                    if pcbnew.IsCopperLayer(layer_id):
-                        add_shape(layer_id, via_shape)
-                        via_count += 1
-                
-                if self.debug and via_count > 0:
-                    self.logger.debug(f"Via at ({x_mm:.2f},{y_mm:.2f}), radius={radius_mm:.2f}mm, added to {via_count} layers")
-                
-            elif track.GetClass() == "PCB_TRACK" or track.GetClass() == "PCB_ARC":
-                # Standard Track
-                track_count += 1
-                layer = track.GetLayer()
-                width_mm = pcbnew.ToMM(track.GetWidth())
-                
-                start = track.GetStart()
-                end = track.GetEnd()
-                
-                p0 = (pcbnew.ToMM(start.x), pcbnew.ToMM(start.y))
-                p1 = (pcbnew.ToMM(end.x), pcbnew.ToMM(end.y))
-                
-                if self.debug and track_count <= 5:  # Log first 5 tracks
-                    length = ((p1[0]-p0[0])**2 + (p1[1]-p0[1])**2)**0.5
-                    self.logger.debug(f"Track #{track_count}: layer={layer}, width={width_mm:.2f}mm, length={length:.2f}mm, from ({p0[0]:.1f},{p0[1]:.1f}) to ({p1[0]:.1f},{p1[1]:.1f})")
-                
-                # Create LineString and buffer it to get a Polygon (track width)
-                # Cap style 1 is ROUND
-                line = LineString([p0, p1])
-                poly = line.buffer(width_mm / 2, cap_style=1)
-                
-                add_shape(layer, poly)
+        tracks = self._get_board_items('tracks')
         
-        if self.debug and track_count > 0:
-            self.logger.debug(f"Processed {track_count} track(s) for net '{net_name}'")
-
-        # 2. Process Pads
-        # Pads are part of footprints
-        for footprint in self.board.GetFootprints():
-            for pad in footprint.Pads():
-                if pad.GetNetCode() != net_code:
-                    continue
-                
-                # Pads can be on F_Cu, B_Cu, or all (Through Hole)
-                layers_to_process = []
-                # API check for pad layers
-                # Setup a list of target layers for this pad
-                pad_layers = pad.GetLayerSet()
-                
-                # Iterate all copper layers to see if pad is on them
-                stackup = self.get_board_stackup()
-                for layer_id in stackup['copper'].keys():
-                    if pad_layers.Contains(layer_id):
-                        layers_to_process.append(layer_id)
-                
-                if not layers_to_process:
-                    continue
+        # We might want to buffer tracks slightly more than half-width to ensure 
+        # grid points are caught if the track is very thin.
+        # A safety buffer of 0.1mm helps catch grid nodes.
+        safety_buffer = 0.05 
+        
+        for track in tracks:
+            net = self._get_val(track, 'net')
+            t_net_name = self._get_val(net, 'name', "")
+            
+            if t_net_name != net_name:
+                continue
                     
+            start = self._get_val(track, 'start')
+            end = self._get_val(track, 'end')
+            width_mm = to_mm(self._get_val(track, 'width', 0))
+            layer = self._get_val(track, 'layer', -1)
+            
+            if width_mm <= 0: width_mm = 0.2
+            
+            p0 = (to_mm(self._get_val(start, 'x', 0)), to_mm(self._get_val(start, 'y', 0)))
+            p1 = (to_mm(self._get_val(end, 'x', 0)), to_mm(self._get_val(end, 'y', 0)))
+            
+            # Check for Arc
+            # Attributes: center, radius, start_angle, end_angle (or angle)
+            is_arc = False
+            mid = self._get_val(track, 'mid')
+            if mid:
+                 is_arc = True
+            
+            if is_arc:
+                # Discretize arc with higher resolution
+                pm = (to_mm(self._get_val(mid, 'x', 0)), to_mm(self._get_val(mid, 'y', 0)))
+                
+                center = self._get_val(track, 'center')
+                radius = self._get_val(track, 'radius')
+                
+                # Check directly for angles
+                start_angle = self._get_val(track, 'start_angle')
+                end_angle = self._get_val(track, 'end_angle')
+                
+                points = []
+                
+                if center and radius and start_angle is not None and end_angle is not None:
+                    cx = to_mm(self._get_val(center, 'x', 0))
+                    cy = to_mm(self._get_val(center, 'y', 0))
+                    r_mm = to_mm(radius)
+                    
+                    # Convert 0.1 degrees (KiCad default) to radians? 
+                    # Need to verify unit. Usually integers in 1/10 degree or similar, but
+                    # kipy might normalize. 
+                    
+                    # Safe approach: Calculate angles ourselves from coordinates to be sure
+                    # atan2 returns radians -pi to pi
+                    a_start = math.atan2(p0[1] - cy, p0[0] - cx)
+                    a_mid = math.atan2(pm[1] - cy, pm[0] - cx)
+                    a_end = math.atan2(p1[1] - cy, p1[0] - cx)
+                    
+                    # Handle wrapping. 
+                    # Cross product to determine direction? 
+                    # Simple way: check if mid is between start/end in one direction
+                    
+                    # Normalize angles to 0-2pi
+                    if a_start < 0: a_start += 2*math.pi
+                    if a_mid < 0: a_mid += 2*math.pi
+                    if a_end < 0: a_end += 2*math.pi
+                    
+                    # Determine sort order
+                    # Case 1: Start < Mid < End
+                    # Case 2: Wrap around 0/2pi
+                    
+                    # Just discretize from Start to End passing through Mid
+                    # Total swept angle?
+                    
+                    # Vector arithmetic:
+                    v_start = (p0[0]-cx, p0[1]-cy)
+                    v_mid = (pm[0]-cx, pm[1]-cy)
+                    v_end = (p1[0]-cx, p1[1]-cy)
+                    
+                    # We can pick N points. 
+                    # Just use 8 segments (9 points) for smoothness
+                    points = [p0]
+                    
+                    # We need to know which WAY to go (CW or CCW). Mid tells us.
+                    # We can just construct two arcs (Start->Mid) and (Mid->End)
+                    # 4 segments for Start->Mid, 4 for Mid->End = 8 total
+                    
+                    for (ps, pe) in [(p0, pm), (pm, p1)]:
+                        a1 = math.atan2(ps[1] - cy, ps[0] - cx)
+                        a2 = math.atan2(pe[1] - cy, pe[0] - cx)
+                        
+                        # Find shortest diff? kipy arcs usually shortest path?
+                        # Actually arc direction is defined.
+                        # Simple interpolation:
+                        # But wait, atan2 discontinuity.
+                        
+                        diff = a2 - a1
+                        if diff > math.pi: diff -= 2*math.pi
+                        if diff < -math.pi: diff += 2*math.pi
+                        
+                        steps = 4
+                        for i in range(1, steps + 1):
+                            ang = a1 + diff * (i / steps)
+                            px = cx + r_mm * math.cos(ang)
+                            py = cy + r_mm * math.sin(ang)
+                            points.append((px, py))
+                            
+                else:
+                    # Fallback to 3 points
+                    points = [p0, pm, p1]
+                    
+                line = LineString(points)
+                # Cap style 1 (Round) is good for arcs
+                poly = line.buffer(width_mm / 2 + safety_buffer, cap_style=1)
+            else:
+                if p0 == p1:
+                    # Circular pad (VIA-like track?)
+                    poly = Point(p0).buffer(width_mm / 2 + safety_buffer)
+                else:
+                    line = LineString([p0, p1])
+                    poly = line.buffer(width_mm / 2 + safety_buffer, cap_style=1)
+            
+            if is_copper(layer):
+                add_shape(layer, poly)
+
+        # 1b. Process Vias (Essental for vertical connectivity mesh nodes)
+        vias = self._get_board_items('vias')
+        for via in vias:
+            net = self._get_val(via, 'net')
+            v_net_name = self._get_val(net, 'name', "")
+            
+            if v_net_name != net_name:
+                continue
+                
+            pos = self._get_val(via, 'position')
+            x_mm = to_mm(self._get_val(pos, 'x', 0))
+            y_mm = to_mm(self._get_val(pos, 'y', 0))
+            
+            width_mm = to_mm(self._get_val(via, 'width', 0.6*1e6))
+            poly = Point(x_mm, y_mm).buffer(width_mm / 2 + safety_buffer)
+            
+            # Vias exist on all layers in their pair (usually through-all)
+            layers = self._get_val(via, 'layers')
+            if not layers:
+                ps = self._get_val(via, 'padstack')
+                if ps:
+                    layers = self._get_val(ps, 'layers')
+            
+            if not layers:
+                lp = self._get_val(via, 'layer_pair')
+                if lp:
+                    s_lid, e_lid = min(lp), max(lp)
+                    stackup = self.get_board_stackup()
+                    layers = [l for l in stackup['copper'].keys() if s_lid <= l <= e_lid]
+                else:
+                    # Default to all copper layers if no info
+                    stackup = self.get_board_stackup()
+                    layers = list(stackup['copper'].keys())
+            
+            for lid in layers:
+                if is_copper(lid):
+                    add_shape(lid, poly)
+                    
+        # 2. Process Pads (Footprints)
+        footprints = self._get_board_items('footprints')
+        for fp in footprints:
+            pads = self._get_val(fp, 'pads')
+            is_def_pads = False
+            
+            if pads is None:
+                defn = self._get_val(fp, 'definition')
+                pads = self._get_val(defn, 'pads', [])
+                is_def_pads = True
+                
+            # Get footprint transforms if needed
+            fp_x, fp_y, fp_rot = 0, 0, 0
+            if is_def_pads:
+                fp_pos = self._get_val(fp, 'position')
+                fp_x = to_mm(self._get_val(fp_pos, 'x', 0))
+                fp_y = to_mm(self._get_val(fp_pos, 'y', 0))
+                fp_rot = self._get_val(fp, 'orientation', 0)
+                # Ensure float
+                try: fp_rot = float(fp_rot)
+                except: fp_rot = 0.0
+
+            for pad in pads:
+                net = self._get_val(pad, 'net')
+                p_net_name = self._get_val(net, 'name', "")
+                    
+                if p_net_name != net_name:
+                    continue
+                            
+                # Geometry
+                # Position (Absolute)
+                pos = self._get_val(pad, 'position')
+                x_mm = to_mm(self._get_val(pos, 'x', 0))
+                y_mm = to_mm(self._get_val(pos, 'y', 0))
+                
+                # Size & Shape
+                w_mm = 0
+                h_mm = 0
+                shape_type = 0 # 0=Circle, 1=Rect, 2=RoundRect/Oval? Need verification.
+                
+                # Try direct size first
+                size = self._get_val(pad, 'size')
+                if size:
+                    w_mm = to_mm(self._get_val(size, 'x', 0))
+                    h_mm = to_mm(self._get_val(size, 'y', 0))
+                    shape_type = self._get_val(pad, 'shape', 1)
+                
+                # Fallback to padstack
+                if w_mm == 0:
+                    ps = self._get_val(pad, 'padstack')
+                    if ps:
+                        cls = self._get_val(ps, 'copper_layers', [])
+                        if cls and len(cls) > 0:
+                            l0 = cls[0]
+                            sz = self._get_val(l0, 'size')
+                            w_mm = to_mm(self._get_val(sz, 'x', 0))
+                            h_mm = to_mm(self._get_val(sz, 'y', 0))
+                            shape_type = self._get_val(l0, 'shape', 1)
+
+                if w_mm == 0: w_mm = 1.0
+                if h_mm == 0: h_mm = 1.0
+
+                # Rotation
+                pad_rot = self._get_val(pad, 'rotation', 0)
+                if pad_rot == 0:
+                     ps = self._get_val(pad, 'padstack')
+                     pad_rot = self._get_val(ps, 'angle', 0)
+                try: pad_rot = float(pad_rot)
+                except: pad_rot = 0.0
+                
                 # Create Shape
-                pos = pad.GetPosition()
-                x_mm = pcbnew.ToMM(pos.x)
-                y_mm = pcbnew.ToMM(pos.y)
-                size = pad.GetSize()
-                w_mm = pcbnew.ToMM(size.x)
-                h_mm = pcbnew.ToMM(size.y)
-                shape_type = pad.GetShape()
-                rot_deg = pad.GetOrientation().AsDegrees()
+                # Shape types (Empirical/Guess based on kipy enum): 
+                # PSS_CIRCLE = 0, PSS_RECT = 1, PSS_ROUNDRECT = 2, PSS_OVAL = 3
+                # For now, treat Circle as Circle, everything else as Box/Rect
+                # If only one dimension is relevant for circle, usually x==y
+                
+                # Note: 'shape' attribute value 2 seen in inspection for Rect/RoundRect pads
                 
                 pad_poly = None
                 
-                if shape_type == pcbnew.PAD_SHAPE_CIRCLE:
-                    pad_poly = Point(x_mm, y_mm).buffer(w_mm / 2)
-                    
-                elif shape_type == pcbnew.PAD_SHAPE_RECT:
-                    # Create box centered at 0,0 then translate/rotate
+                if str(shape_type) == 'PSS_CIRCLE' or shape_type == 0:
+                     # Circle
+                     pad_poly = Point(x_mm, y_mm).buffer(w_mm / 2)
+                else:
+                    # Rectangle / Oval / RoundRect
                     minx, miny = -w_mm/2, -h_mm/2
                     maxx, maxy = w_mm/2, h_mm/2
                     base_box = box(minx, miny, maxx, maxy)
-                    # Rotate and translate provided by Shapely affinity is one way, 
-                    # but check if we need to do it manually or if pad.GetPosition() is center.
-                    # Yes, pad position is center.
-                    from shapely import affinity
-                    rotated = affinity.rotate(base_box, -rot_deg, origin=(0,0)) # KiCad rotation is CCW? checking..
-                    pad_poly = affinity.translate(rotated, x_mm, y_mm)
-                    
-                elif shape_type == pcbnew.PAD_SHAPE_ROUNDRECT:
-                    # Approximate with box buffer or similar
-                    # For now treat as RECT
-                    minx, miny = -w_mm/2, -h_mm/2
-                    maxx, maxy = w_mm/2, h_mm/2
-                    base_box = box(minx, miny, maxx, maxy)
-                    from shapely import affinity
-                    rotated = affinity.rotate(base_box, -rot_deg, origin=(0,0))
-                    pad_poly = affinity.translate(rotated, x_mm, y_mm)
-
-                elif shape_type == pcbnew.PAD_SHAPE_OVAL:
-                    # Segment with rounded ends
-                    # If w > h, horizontal oval. length = w - h. radius = h/2.
-                    # Simplified: Treat as point buffer if close to circle, or thick line.
-                    # Implementing as a thick line segment
-                    # For now, fallback to Rect approximation for simplicity or Skip if complex
-                    # Just use the bounding box logic for MVP
-                    minx, miny = -w_mm/2, -h_mm/2
-                    maxx, maxy = w_mm/2, h_mm/2
-                    base_box = box(minx, miny, maxx, maxy)
-                    from shapely import affinity
-                    rotated = affinity.rotate(base_box, -rot_deg, origin=(0,0))
-                    pad_poly = affinity.translate(rotated, x_mm, y_mm)
+                    rotated_shape = affinity.rotate(base_box, -pad_rot, origin=(0,0))
+                    pad_poly = affinity.translate(rotated_shape, x_mm, y_mm)
                 
-                if pad_poly:
-                    for layer in layers_to_process:
-                        add_shape(layer, pad_poly)
+                # Layers
+                layers = self._get_val(pad, 'layers')
+                if not layers:
+                    ps = self._get_val(pad, 'padstack')
+                    if ps:
+                        layers = self._get_val(ps, 'layers')
+                        if not layers:
+                             layers = self._get_val(ps, 'copper_layers')
+
+                if not layers: layers = []
+                
+                for lid in layers:
+                   if is_copper(lid):
+                       add_shape(lid, pad_poly)
 
         # 3. Process Zones
-        zone_count = 0
-        for zone in self.board.Zones():
-            if zone.GetNetCode() != net_code:
+        zones = self._get_board_items('zones')
+        for zone in zones:
+            net = self._get_val(zone, 'net')
+            z_net_name = self._get_val(net, 'name', "")
+            
+            if z_net_name != net_name:
                 continue
-            if not zone.GetIsRuleArea(): # Ensure it's a copper zone
-                zone_count += 1
                 
-                # Check if zone is filled
-                is_filled = zone.IsFilled()
-                if self.debug:
-                    self.logger.debug(f"Processing zone #{zone_count} for net '{net_name}', Filled: {is_filled}")
-                
-                if not is_filled:
-                    if self.debug:
-                        self.logger.warning(f"  Zone #{zone_count} is NOT filled - may result in missing geometry!")
-                    # Continue anyway to see what we can extract
-                
-                # Multi-layer handling
-                layers_to_process = []
-                layer = zone.GetLayer()
-                
-                if layer < 0:
-                    # Multi-layer zone
-                    try:
-                        lset = zone.GetLayerSet()
-                        for id in lset.Seq():
-                            layers_to_process.append(id)
-                        if self.debug:
-                            self.logger.debug(f"  Multi-layer zone, layers: {layers_to_process}")
-                    except Exception as e:
-                        if self.debug:
-                            self.logger.warning(f"  Failed to get layer set: {e}")
-                else:
-                    layers_to_process.append(layer)
-                    if self.debug:
-                        self.logger.debug(f"  Single-layer zone on layer {layer}")
+            # Filled Polygons (dict mapping layer_id -> list of polygon objects)
+            filled_polygons = self._get_val(zone, 'filled_polygons', {})
+            
+            # filled_polygons is a dict: {layer_id: [polygon_object, ...]}
+            if isinstance(filled_polygons, dict):
+                for layer_id, poly_list in filled_polygons.items():
+                    if not is_copper(layer_id):
+                        continue
                     
-                for target_layer in layers_to_process:
-                    poly_set = None
-                    api_method_used = None
-                    
-                    # Try multiple API methods for getting filled polys
-                    try:
-                        # Method 1: GetFilledPolysList with layer parameter (KiCad 9.0+)
-                        try:
-                            poly_set = zone.GetFilledPolysList(target_layer)
-                            api_method_used = "GetFilledPolysList(layer)"
-                        except (TypeError, AttributeError) as e1:
-                            # Method 2: GetFilledPolysList without parameter (fallback)
-                            try:
-                                poly_set = zone.GetFilledPolysList()
-                                api_method_used = "GetFilledPolysList()"
-                            except Exception as e2:
-                                # Method 3: Try FilledPolysList property (alternative API)
-                                try:
-                                    poly_set = zone.FilledPolysList(target_layer)
-                                    api_method_used = "FilledPolysList(layer)"
-                                except:
-                                    try:
-                                        poly_set = zone.FilledPolysList()
-                                        api_method_used = "FilledPolysList()"
-                                    except Exception as e3:
-                                        if self.debug:
-                                            self.logger.error(f"  All API methods failed for layer {target_layer}")
-                                            self.logger.error(f"    Method 1 error: {e1}")
-                                            self.logger.error(f"    Method 2 error: {e2}")
-                                            self.logger.error(f"    Method 3 error: {e3}")
-                                        continue
+                    if not isinstance(poly_list, (list, tuple)):
+                        poly_list = [poly_list]
                         
-                        if poly_set is None:
-                            if self.debug:
-                                self.logger.warning(f"  No polygon set retrieved for layer {target_layer}")
-                            continue
+                    for poly_obj in poly_list:
+                        pts = []
                         
-                        if self.debug:
-                            self.logger.debug(f"  Successfully got polygons using {api_method_used}")
+                        # Get outline from polygon object
+                        outline = self._get_val(poly_obj, 'outline')
+                        if outline:
+                            # Try 'nodes' first (PolyLine has nodes), fallback to 'points'
+                            points_list = self._get_val(outline, 'nodes')
+                            if not points_list:
+                                points_list = self._get_val(outline, 'points', [])
+                                
+                            for node in points_list:
+                                # Each node might be PolyLineNode or just have 'point'
+                                point = self._get_val(node, 'point')
+                                if point:
+                                    x = self._get_val(point, 'x', 0)
+                                    y = self._get_val(point, 'y', 0)
+                                    pts.append((to_mm(x), to_mm(y)))
                         
-                        count = poly_set.OutlineCount()
-                        if self.debug:
-                            self.logger.debug(f"  Polygon set has {count} outline(s)")
-                        
-                        for i in range(count):
-                            try:
-                                outline = poly_set.Outline(i)
-                                
-                                # SHAPE_LINE_CHAIN extraction
-                                points = []
-                                pc = outline.PointCount()
-                                
-                                if self.debug:
-                                    self.logger.debug(f"    Outline {i} has {pc} points")
-                                
-                                if pc < 3:
-                                    if self.debug:
-                                        self.logger.warning(f"    Outline {i} has less than 3 points, skipping")
-                                    continue
-                                
-                                point_method_used = None
-                                for j in range(pc):
-                                    pt = None
-                                    # Try multiple point access methods
-                                    try:
-                                        # Method 1: CPoint (KiCad 9.0)
-                                        pt = outline.CPoint(j)
-                                        if point_method_used is None:
-                                            point_method_used = "CPoint"
-                                    except AttributeError:
-                                        try:
-                                            # Method 2: Point (older versions)
-                                            pt = outline.Point(j)
-                                            if point_method_used is None:
-                                                point_method_used = "Point"
-                                        except AttributeError:
-                                            try:
-                                                # Method 3: GetPoint (potential alternative)
-                                                pt = outline.GetPoint(j)
-                                                if point_method_used is None:
-                                                    point_method_used = "GetPoint"
-                                            except Exception as e_pt:
-                                                if self.debug and j == 0:
-                                                    self.logger.error(f"    Failed to access point {j}: {e_pt}")
-                                                continue
-                                    
-                                    if pt is None:
-                                        continue
-                                    
-                                    x = getattr(pt, 'x', None)
-                                    y = getattr(pt, 'y', None)
-                                    if x is not None and y is not None:
-                                        points.append((pcbnew.ToMM(x), pcbnew.ToMM(y)))
-                                    else:
-                                        if self.debug and j == 0:
-                                            self.logger.warning(f"    Point {j} missing x or y attribute")
-                                
-                                if self.debug and point_method_used:
-                                    self.logger.debug(f"    Successfully extracted points using {point_method_used}")
+                        if len(pts) >= 3:
+                            p = Polygon(pts)
+                            if not p.is_valid: 
+                                p = p.buffer(0)
+                            
+                            # Handle holes if present
+                            holes_data = self._get_val(poly_obj, 'holes', [])
+                            if holes_data:
+                                for hole_outline in holes_data:
+                                    h_pts = []
+                                    # Try 'nodes' then 'points'
+                                    h_points_list = self._get_val(hole_outline, 'nodes')
+                                    if not h_points_list:
+                                        h_points_list = self._get_val(hole_outline, 'points', [])
                                         
-                                if len(points) >= 3:
-                                    p = Polygon(points)
-                                    if not p.is_valid:
-                                        if self.debug:
-                                            self.logger.debug(f"    Polygon invalid, buffering to fix")
-                                        p = p.buffer(0)
-                                    if p.is_valid:
-                                        # Log bounds of individual outline BEFORE adding
-                                        if self.debug:
-                                            bounds = p.bounds
-                                            width = bounds[2] - bounds[0]
-                                            height = bounds[3] - bounds[1]
-                                            self.logger.debug(f"    Outline {i} bounds: {width:.1f}x{height:.1f}mm at ({bounds[0]:.1f},{bounds[1]:.1f}) to ({bounds[2]:.1f},{bounds[3]:.1f})")
-                                        
-                                        add_shape(target_layer, p)
-                                        if self.debug:
-                                            self.logger.debug(f"    Added polygon with {len(points)} points to layer {target_layer}")
-                                    else:
-                                        if self.debug:
-                                            self.logger.warning(f"    Polygon still invalid after buffer, skipping")
-                                else:
-                                    if self.debug:
-                                        self.logger.warning(f"    Only extracted {len(points)} points (need 3+), skipping")
-                            except Exception as e:
-                                if self.debug:
-                                    self.logger.error(f"    Error parsing outline {i}: {e}")
-                                else:
-                                    print(f"Error parsing outline {i}: {e}")
-                    except Exception as e_zone:
-                        if self.debug:
-                            self.logger.error(f"  Error processing zone on layer {target_layer}: {e_zone}")
-                        else:
-                            print(f"Error processing zone layer {target_layer}: {e_zone}")
-        
-        if self.debug and zone_count > 0:
-            self.logger.debug(f"Processed {zone_count} zone(s) for net '{net_name}'") 
-                
+                                    for h_node in h_points_list:
+                                        h_point = self._get_val(h_node, 'point')
+                                        if h_point:
+                                            h_pts.append((to_mm(self._get_val(h_point, 'x', 0)), 
+                                                         to_mm(self._get_val(h_point, 'y', 0))))
+                                    
+                                    if len(h_pts) >= 3:
+                                        hole_poly = Polygon(h_pts)
+                                        if hole_poly.is_valid:
+                                            p = p.difference(hole_poly)
+                            
+                            if p.is_valid and not p.is_empty:
+                                add_shape(layer_id, p)
+
         # 4. Merge
         merged_geometry = {}
         for layer, shapes in layer_shapes.items():
@@ -555,81 +614,40 @@ class GeometryExtractor:
             merged = unary_union(shapes)
             merged_geometry[layer] = merged
             
-            # Debug: Log geometry details
-            if self.debug:
-                bounds = merged.bounds  # (minx, miny, maxx, maxy)
-                area = merged.area
-                width = bounds[2] - bounds[0]
-                height = bounds[3] - bounds[1]
-                self.logger.debug(f"Layer {layer} geometry: area={area:.2f} mm², size={width:.1f}x{height:.1f} mm, bounds=({bounds[0]:.1f}, {bounds[1]:.1f}) to ({bounds[2]:.1f}, {bounds[3]:.1f})")
-            
         return merged_geometry
 
     def plot_geometry(self, geometry_by_layer):
         """Visualize the extracted geometry as a 2D plot."""
         try:
             import matplotlib.pyplot as plt
-            import matplotlib.patches as mpatches
-            from matplotlib.collections import PatchCollection
-            import io
-            
             fig, ax = plt.subplots(figsize=(10, 8))
-            
-            # Color map for layers
             layer_colors = {0: 'red', 2: 'blue', 31: 'green'}
             
             for layer_id, geom in geometry_by_layer.items():
-                if geom.is_empty:
-                    continue
-                
+                if geom.is_empty: continue
                 color = layer_colors.get(layer_id, 'gray')
                 
-                # Handle MultiPolygon or Polygon
-                if geom.geom_type == 'Polygon':
-                    polys = [geom]
-                elif geom.geom_type == 'MultiPolygon':
-                    polys = list(geom.geoms)
-                else:
-                    continue
+                if geom.geom_type == 'Polygon': polys = [geom]
+                elif geom.geom_type == 'MultiPolygon': polys = list(geom.geoms)
+                else: continue
                 
                 for poly in polys:
                     x, y = poly.exterior.xy
                     ax.fill(x, y, alpha=0.5, fc=color, ec='black', linewidth=0.5, label=f'Layer {layer_id}')
-                    
-                    # Plot holes
                     for interior in poly.interiors:
                         x, y = interior.xy
                         ax.fill(x, y, alpha=1.0, fc='white', ec='black', linewidth=0.5)
             
-            ax.set_xlabel('X (mm)')
-            ax.set_ylabel('Y (mm)')
-            ax.set_title('Extracted Geometry (Pre-Mesh)')
             ax.set_aspect('equal')
-            ax.grid(True, alpha=0.3)
-            ax.invert_yaxis()  # Match KiCad coordinate system
-            
-            # Remove duplicate labels
-            handles, labels = ax.get_legend_handles_labels()
-            by_label = dict(zip(labels, handles))
-            ax.legend(by_label.values(), by_label.keys())
-            
+            ax.invert_yaxis()
             plt.tight_layout()
-            
-            # Save to PNG file
             import os
             output_path = os.path.join(os.path.dirname(__file__), 'debug_geometry.png')
-            plt.savefig(output_path, format='png', dpi=150, bbox_inches='tight')
+            plt.savefig(output_path, format='png')
             if self.debug:
-                self.logger.debug(f"Saved geometry plot to {output_path}")
-            
-            # Also return as buffer for UI display
-            buf = io.BytesIO()
-            plt.savefig(buf, format='png', dpi=100)
+                 self.logger.debug(f"Saved debug plot to {output_path}")
             plt.close(fig)
-            buf.seek(0)
-            return buf
-            
+            return output_path
         except Exception as e:
-            if self.debug:
-                self.logger.error(f"Failed to plot geometry: {e}")
+            if self.debug: self.logger.error(f"Plotting failed: {e}")
             return None

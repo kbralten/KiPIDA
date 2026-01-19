@@ -2,10 +2,11 @@ import wx
 import wx.dataview
 
 try:
-    from ..models import PowerRail, UnifiedSource, UnifiedLoad, ComponentRef
-    from .component_selector import ComponentSelectorDialog
-    from ..discovery import NetDiscoverer
+    from models import PowerRail, UnifiedSource, UnifiedLoad, ComponentRef
+    from ui.component_selector import ComponentSelectorDialog
+    from discovery import NetDiscoverer
 except (ImportError, ValueError):
+    # Fallback or just re-raise if absolute fails (shouldn't happen with sys.path set)
     from models import PowerRail, UnifiedSource, UnifiedLoad, ComponentRef
     from ui.component_selector import ComponentSelectorDialog
     from discovery import NetDiscoverer
@@ -30,27 +31,28 @@ class NetSelectionDialog(wx.Dialog):
         return self.lb.GetString(sel)
 
 class PowerTreePanel(wx.Panel):
-    def __init__(self, parent, board):
+    def __init__(self, parent, board, log_callback=None):
         super().__init__(parent)
         self.board = board
-        self.discoverer = NetDiscoverer(board)
+        self.log_callback = log_callback
+        self.discoverer = NetDiscoverer(board, log_callback=log_callback)
         
         # Data
         self.rails = [] # List of PowerRail objects
         self.active_rail = None
         
         self._init_ui()
+
+    def log(self, msg):
+        if self.log_callback:
+            self.log_callback(msg)
+        else:
+            print(msg)
         
     def _init_ui(self):
         main_sizer = wx.BoxSizer(wx.VERTICAL)
         
-        # Toolbar / Top Buttons
-        top_hbox = wx.BoxSizer(wx.HORIZONTAL)
-        self.btn_scan = wx.Button(self, label="Scan Board")
-        top_hbox.Add(self.btn_scan, 0, wx.ALL, 5)
-        self.btn_refresh = wx.Button(self, label="Refresh Net")
-        top_hbox.Add(self.btn_refresh, 0, wx.ALL, 5)
-        main_sizer.Add(top_hbox, 0, wx.EXPAND)
+        # Auto-scan will happen after UI is built
         
         # Splitter: Rail List (Left) vs Rail Details (Right)
         # Actually, let's use a master-detail approach. 
@@ -117,7 +119,6 @@ class PowerTreePanel(wx.Panel):
         self.SetSizer(main_sizer)
         
         self.btn_add_rail.Bind(wx.EVT_BUTTON, self.on_add_rail)
-        self.btn_scan.Bind(wx.EVT_BUTTON, self.on_scan)
         self.rail_list.Bind(wx.EVT_LISTBOX, self.on_rail_select)
         self.txt_voltage.Bind(wx.EVT_TEXT, self.on_voltage_change)
         
@@ -125,8 +126,10 @@ class PowerTreePanel(wx.Panel):
         self.btn_add_load.Bind(wx.EVT_BUTTON, lambda e: self.on_add_component("LOAD"))
         self.btn_del_comp.Bind(wx.EVT_BUTTON, self.on_del_component)
 
-    def on_scan(self, event):
+    def auto_scan(self):
+        """Auto-scan board on startup"""
         self.rails = self.discoverer.discover_power_nets()
+        self.log(f"Scan complete. Discovered {len(self.rails)} power rail candidates.")
         self.rail_list.Clear()
         for r in self.rails:
             lbl = f"{r.net_name}"
@@ -141,8 +144,10 @@ class PowerTreePanel(wx.Panel):
     def on_add_rail(self, event):
         # Find all nets not already in self.rails
         existing_nets = {r.net_name for r in self.rails}
-        all_nets = self.board.GetNetsByName()
-        candidate_nets = [str(n) for n in all_nets.keys() if str(n) and str(n) not in existing_nets]
+        # Use discoverer to get nets via IPC
+        all_nets = self.discoverer.get_all_net_names()
+        self.log(f"Found {len(all_nets)} total nets on board.")
+        candidate_nets = [n for n in all_nets if n and n not in existing_nets]
         
         dlg = NetSelectionDialog(self, candidate_nets)
         if dlg.ShowModal() == wx.ID_OK:
@@ -206,12 +211,40 @@ class PowerTreePanel(wx.Panel):
         if not self.active_rail: return
         
         # Get components on this net
-        comps = self.discoverer.get_components_on_net(self.active_rail.net_name)
-        if not comps:
+        all_comps = self.discoverer.get_components_on_net(self.active_rail.net_name)
+        if not all_comps:
             wx.MessageBox("No components found on this net.")
             return
+        
+        # Filter out components where all pads are already assigned
+        # Build set of all used pads (ref-pad format)
+        used_pads = set()
+        for src in self.active_rail.sources:
+            for pad in src.pad_names:
+                used_pads.add(f"{src.component_ref.ref_des}-{pad}")
+        for load in self.active_rail.loads:
+            for pad in load.pad_names:
+                used_pads.add(f"{load.component_ref.ref_des}-{pad}")
+        
+        # Filter components
+        available_comps = {}
+        for ref, pads in all_comps.items():
+            # Check if any pad is not used
+            has_available_pad = False
+            for pad in pads:
+                pad_name = getattr(pad, 'number', getattr(pad, 'name', ''))
+                if f"{ref}-{pad_name}" not in used_pads:
+                    has_available_pad = True
+                    break
+            
+            if has_available_pad:
+                available_comps[ref] = pads
+        
+        if not available_comps:
+            wx.MessageBox("All components on this net have been assigned.")
+            return
 
-        dlg = ComponentSelectorDialog(self, "Select Component", self.active_rail.net_name, comps)
+        dlg = ComponentSelectorDialog(self, "Select Component", self.active_rail.net_name, available_comps)
         dlg.set_mode(mode)
         
         if dlg.ShowModal() == wx.ID_OK:

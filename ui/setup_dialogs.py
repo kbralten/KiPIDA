@@ -1,7 +1,5 @@
-
 import wx
-import pcbnew
-
+# import pcbnew # Removed to avoid SWIG dependency crash
 class SourceLoadDialog(wx.Dialog):
     def __init__(self, parent, title, net_name, board, used_pads=None, initial_value=0.0, initial_pads=None):
         super(SourceLoadDialog, self).__init__(parent, title=title, size=(400, 350))

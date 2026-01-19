@@ -21,16 +21,27 @@ Ki-PIDA democratizes high-end PI analysis by:
 
 ## 📦 Installation
 
-To run Ki-PIDA on Windows, you must install the required dependencies into the Python environment bundled with KiCad.
+Ki-PIDA is designed to run within the KiCad 9.0+ environment. Follow these steps to install and enable the plugin:
 
-1.  Open the **KiCad 9.0 Command Prompt** from your Start Menu.
-2.  Run the following command to install the required libraries:
-    ```bash
-    pip install numpy scipy shapely matplotlib pypardiso
-    ```
+### 1. Enable the KiCad API
+Ki-PIDA communicates with KiCad via the new IPC-based API.
+1. Open KiCad.
+2. Go to **Preferences** > **Common**.
+3. Under the **API** section, check the box for **Enable API**.
+4. Restart KiCad if prompted.
 
-> [!TIP]
-> **PyPardiso** is highly recommended as it provides a multi-threaded parallel solver that is significantly faster for large PCB designs.
+### 2. Install the Plugin
+1. Locate your KiCad plugins directory:
+   - **Windows:** `%APPDATA%\kicad\9.0\plugins`
+   - **Linux:** `~/.local/share/kicad/9.0/plugins`
+   - **macOS:** `~/Library/Application Support/kicad/9.0/plugins`
+2. Download or clone this repository.
+3. Copy the `KiPIDA` folder into the `plugins` directory.
+
+> [!NOTE]
+> Ki-PIDA includes a self-contained dependency manager that will automatically install required libraries (NumPy, SciPy, Shapely, Matplotlib) upon first launch if they are missing from your KiCad Python environment.
+
+---
 
 ## 📖 Tutorial: Your First IR Drop Analysis
 
@@ -39,11 +50,11 @@ Follow these steps to perform a DC Power Integrity analysis on your board.
 ### 1. Launch the Plugin
 Open your PCB layout in KiCad Pcbnew and click the **Ki-PIDA** icon in the top toolbar to open the analyzer.
 
-### 2. Discover and Setup Power Rails
-The **Power Tree & Config** tab is where you define your electrical network.
-- **Scan Board**: Click this to automatically discover nets connected to power plane zones.
-- **Manual Addition**: If your net isn't listed, click **Add Manual Net** and select it from the netlist.
-- **Set Voltage**: Select your net (e.g., `+3V3`) in the list. In **Rail Properties**, enter the **Nominal Voltage (V)** (e.g., `3.3`).
+### 2. Review Discovered Power Rails
+Upon launch, Ki-PIDA automatically scans your board for likely power rails (based on naming conventions like `+3V3`, `VCC`, `VDD`, `GND`).
+- Your identified nets will appear in the **Power Tree & Config** tab.
+- **Set Voltage**: Select your net (e.g., `+3V3`). In **Rail Properties**, enter the **Nominal Voltage (V)** (e.g., `3.3`).
+- **Manual Addition**: If a specific net was not auto-discovered, click **Add Manual Net** to select it from the full netlist.
 
 ![Power Tree & Config](image.png)
 

@@ -1,0 +1,24 @@
+{
+    "$schema": "https://go.kicad.org/api/schemas/v1",
+    "identifier": "com.github.kbralten.kipida",
+    "name": "Ki-PIDA",
+    "description": "Power Integrity & Delivery Analyzer for KiCad",
+    "version": "0.5.1",
+    "kicad_version": "9.99",
+    "status": "stable",
+    "runtime": {
+        "type": "python"
+    },
+    "actions": [
+        {
+            "identifier": "kipida_sim",
+            "name": "Ki-PIDA Simulation",
+            "description": "Run Power Integrity Analysis",
+            "show-button": true,
+            "scopes": ["pcb"],
+            "entrypoint": "ipc_entry.py",
+            "icons-light": ["resources/kipida.png"],
+            "icons-dark": ["resources/kipida.png"]
+        }
+    ]
+}
