@@ -155,3 +155,26 @@ class ComponentSelectorDialog(wx.Dialog):
             
             return ref, val, pads
         return None, 0.0, []
+
+    def prepopulate(self, ref_des, value, pads):
+        """Pre-set the dialog state for editing"""
+        idx = self.lst_comps.FindString(ref_des)
+        if idx != wx.NOT_FOUND:
+            self.lst_comps.SetSelection(idx)
+            self.on_select(None) # Load pads
+            
+            # Set value
+            if self.mode == "LOAD":
+                self.txt_val.SetValue(str(value))
+            
+            # Set pads
+            all_comp_pads = [self.pad_list.GetString(i) for i in range(self.pad_list.GetCount())]
+            if set(all_comp_pads) == set(pads):
+                self.chk_all_pads.SetValue(True)
+                self.pad_list.Enable(False)
+            else:
+                self.chk_all_pads.SetValue(False)
+                self.pad_list.Enable(True)
+                for i in range(self.pad_list.GetCount()):
+                    p_name = self.pad_list.GetString(i)
+                    self.pad_list.Check(i, p_name in pads)

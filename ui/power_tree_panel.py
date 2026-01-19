@@ -125,6 +125,7 @@ class PowerTreePanel(wx.Panel):
         self.btn_add_src.Bind(wx.EVT_BUTTON, lambda e: self.on_add_component("SOURCE"))
         self.btn_add_load.Bind(wx.EVT_BUTTON, lambda e: self.on_add_component("LOAD"))
         self.btn_del_comp.Bind(wx.EVT_BUTTON, self.on_del_component)
+        self.comp_list.Bind(wx.EVT_LIST_ITEM_ACTIVATED, self.on_edit_component)
 
     def auto_scan(self):
         """Auto-scan board on startup"""
@@ -258,6 +259,68 @@ class PowerTreePanel(wx.Panel):
             else:
                 l = UnifiedLoad(ref, val, pads)
                 self.active_rail.add_load(l)
+                
+            self.refresh_comp_list()
+            
+        dlg.Destroy()
+
+    def on_edit_component(self, event):
+        sel = self.comp_list.GetFirstSelected()
+        if sel == -1 or not self.active_rail: return
+        
+        n_src = len(self.active_rail.sources)
+        comp_obj = None
+        mode = ""
+        if sel < n_src:
+            comp_obj = self.active_rail.sources[sel]
+            mode = "SOURCE"
+        else:
+            comp_obj = self.active_rail.loads[sel - n_src]
+            mode = "LOAD"
+            
+        # Get components on this net
+        all_comps = self.discoverer.get_components_on_net(self.active_rail.net_name)
+        if not all_comps: return
+        
+        # Filter out components where all pads are already assigned, 
+        # but KEEP the pads of the component being edited.
+        used_pads = set()
+        for src in self.active_rail.sources:
+            if src is not comp_obj:
+                for pad in src.pad_names:
+                    used_pads.add(f"{src.component_ref.ref_des}-{pad}")
+        for load in self.active_rail.loads:
+            if load is not comp_obj:
+                for pad in load.pad_names:
+                    used_pads.add(f"{load.component_ref.ref_des}-{pad}")
+                    
+        # Filter components
+        available_comps = {}
+        for ref, pads in all_comps.items():
+            has_available_pad = False
+            for pad in pads:
+                pad_name = getattr(pad, 'number', getattr(pad, 'name', ''))
+                if f"{ref}-{pad_name}" not in used_pads:
+                    has_available_pad = True
+                    break
+            if has_available_pad:
+                available_comps[ref] = pads
+
+        dlg = ComponentSelectorDialog(self, "Edit Component", self.active_rail.net_name, available_comps)
+        dlg.set_mode(mode)
+        
+        # Prepopulate
+        val = 0.0
+        if mode == "LOAD":
+            val = comp_obj.total_current
+        dlg.prepopulate(comp_obj.component_ref.ref_des, val, comp_obj.pad_names)
+        
+        if dlg.ShowModal() == wx.ID_OK:
+            ref_des, val, pads = dlg.GetSelection()
+            comp_obj.component_ref.ref_des = ref_des
+            comp_obj.pad_names = pads
+            if mode == "LOAD":
+                comp_obj.total_current = val
                 
             self.refresh_comp_list()
             
