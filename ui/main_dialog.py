@@ -375,19 +375,26 @@ class KiPIDA_MainDialog(wx.Dialog):
                 v_max = max(results.values())
 
                 # Find unique layers in mesh
-                unique_layers = sorted(list(set(n[2] for n in mesh.node_coords.values())))
+                unique_layers = list(set(n[2] for n in mesh.node_coords.values()))
+                
+                # Sort by stackup order
+                if stackup and 'layer_order' in stackup:
+                    order_map = {lid: idx for idx, lid in enumerate(stackup['layer_order'])}
+                    unique_layers.sort(key=lambda lid: order_map.get(lid, 999))
+                else:
+                    unique_layers.sort()
                 
                 for lid in unique_layers:
-                    bmp_2d = plotter.plot_layer_2d(mesh, lid, stackup, vmin=v_min, vmax=v_max)
-                    # Try to get layer name
-                    l_val = lid
-                    try:
-                        # Assuming stackup structure or board helper
-                        if hasattr(self.board, 'GetLayerName'):
-                            l_val = self.board.GetLayerName(lid)
-                    except: pass
-                    
-                    self._add_plot_tab(f"Layer {l_val}", bmp_2d)
+                    # Get Layer Name
+                    l_name = str(lid)
+                    if stackup and 'copper' in stackup and lid in stackup['copper']:
+                        l_name = stackup['copper'][lid].get('name', str(lid))
+                    elif hasattr(self.board, 'GetLayerName'):
+                        try: l_name = self.board.GetLayerName(lid)
+                        except: pass
+                        
+                    bmp_2d = plotter.plot_layer_2d(mesh, lid, stackup, vmin=v_min, vmax=v_max, layer_name=l_name)
+                    self._add_plot_tab(l_name, bmp_2d)
 
                 self.notebook.SetSelection(1) # Results Tab
 

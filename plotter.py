@@ -66,7 +66,7 @@ class Plotter:
             if self.debug: print(f"Plotter 3D Error: {e}")
             return None
 
-    def plot_layer_2d(self, mesh, layer_id, stackup=None, vmin=None, vmax=None):
+    def plot_layer_2d(self, mesh, layer_id, stackup=None, vmin=None, vmax=None, layer_name=None):
         """
         Generates a 2D plot (heatmap) for a specific layer.
         Returns a wx.Bitmap.
@@ -105,12 +105,13 @@ class Plotter:
             if has_results:
                 plt.colorbar(sc, label='Voltage (V)')
             
-            layer_name = str(layer_id)
-            if stackup and 'copper' in stackup and layer_id in stackup['copper']:
-                 # Try to get layer name? currently stackup dict structure in test is simple
-                 pass
+            if layer_name is None:
+                layer_name = str(layer_id)
+                if stackup and 'copper' in stackup and layer_id in stackup['copper']:
+                     # Try to get layer name? currently stackup dict structure in test is simple
+                     pass
 
-            ax.set_title(f"Layer {layer_name}")
+            ax.set_title(f"Layer: {layer_name}")
             ax.set_xlabel('X (mm)')
             ax.set_ylabel('Y (mm)')
             ax.set_aspect('equal', 'box')

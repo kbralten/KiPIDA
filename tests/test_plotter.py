@@ -55,7 +55,7 @@ class TestPlotter(unittest.TestCase):
         
     def test_plot_2d_layer(self):
         # Should return a bitmap for layer 0
-        bmp = self.plotter.plot_layer_2d(self.mesh, 0, self.stackup, vmin=3.0, vmax=3.5)
+        bmp = self.plotter.plot_layer_2d(self.mesh, 0, self.stackup, vmin=3.0, vmax=3.5, layer_name="F.Cu (Test)")
         print(f"2D Plot Layer 0 result: {bmp}")
         self.assertIsNotNone(bmp)
         
