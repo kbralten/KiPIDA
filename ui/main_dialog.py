@@ -60,13 +60,18 @@ class KiPIDA_MainDialog(wx.Dialog):
         config_sizer = wx.BoxSizer(wx.VERTICAL)
         config_sizer.Add(self.power_tree, 1, wx.EXPAND | wx.ALL, 5)
         
-        # Global Settings (Grid Size, Debug)
+        # Global Settings (Grid Size, Drop %, Debug)
         sett_sizer = wx.BoxSizer(wx.HORIZONTAL)
         
         lbl_grid = wx.StaticText(self.tab_config, label="Mesh Resolution (mm):")
         self.txt_grid_size = wx.TextCtrl(self.tab_config, value="0.1", size=(60, -1))
         sett_sizer.Add(lbl_grid, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         sett_sizer.Add(self.txt_grid_size, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
+        
+        lbl_drop = wx.StaticText(self.tab_config, label="Max Drop %:")
+        self.txt_drop_pct = wx.TextCtrl(self.tab_config, value="5", size=(60, -1))
+        sett_sizer.Add(lbl_drop, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        sett_sizer.Add(self.txt_drop_pct, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
         
         self.chk_debug = wx.CheckBox(self.tab_config, label="Enable Debug Log")
         sett_sizer.Add(self.chk_debug, 0, wx.ALIGN_CENTER_VERTICAL)
@@ -363,17 +368,25 @@ class KiPIDA_MainDialog(wx.Dialog):
                 mesh.results = results
                 self.results_notebook.DeleteAllPages()
 
+                # Determine V_min/V_max for consistent scale
+                # Use rail voltage and drop % for scale
+                try:
+                    drop_pct_ui = float(self.txt_drop_pct.GetValue())
+                    if drop_pct_ui < 0: drop_pct_ui = 0
+                    if drop_pct_ui > 100: drop_pct_ui = 100
+                except:
+                    drop_pct_ui = 5.0
+                
+                v_max = rail.nominal_voltage
+                v_min = rail.nominal_voltage * (1.0 - drop_pct_ui / 100.0)
+
                 plotter = Plotter(debug=debug_mode)
                 
                 # Plot 3D
-                bmp_3d = plotter.plot_3d_mesh(mesh, stackup)
+                bmp_3d = plotter.plot_3d_mesh(mesh, stackup, vmin=v_min, vmax=v_max)
                 self._add_plot_tab("3D View", bmp_3d)
 
                 # Plot Layers
-                # Determine V_min/V_max for consistent scale
-                v_min = min(results.values())
-                v_max = max(results.values())
-
                 # Find unique layers in mesh
                 unique_layers = list(set(n[2] for n in mesh.node_coords.values()))
                 

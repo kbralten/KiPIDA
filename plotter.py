@@ -12,7 +12,7 @@ class Plotter:
     def __init__(self, debug=False):
         self.debug = debug
 
-    def plot_3d_mesh(self, mesh, stackup=None):
+    def plot_3d_mesh(self, mesh, stackup=None, vmin=None, vmax=None):
         """
         Generates a 3D scatter plot of the mesh nodes.
         Returns a wx.Bitmap.
@@ -44,7 +44,7 @@ class Plotter:
                 zs.append(layer_to_z.get(layer, 10 - layer * 0.5))
                 c.append(mesh.results.get(nid, 0.0) if has_results else layer)
                 
-            sc = ax.scatter(xs, ys, zs, c=c, cmap='viridis')
+            sc = ax.scatter(xs, ys, zs, c=c, cmap='viridis', vmin=vmin, vmax=vmax)
             if has_results:
                 plt.colorbar(sc, label='Voltage (V)', shrink=0.8)
             
