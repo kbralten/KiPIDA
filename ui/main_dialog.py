@@ -11,7 +11,9 @@ if plugin_dir not in sys.path:
 from extractor import GeometryExtractor
 from mesh import Mesher
 from solver import Solver
+from solver import Solver
 from ui.power_tree_panel import PowerTreePanel
+from plotter import Plotter
 
 class KiPIDA_MainDialog(wx.Dialog):
     def __init__(self, parent, board_adapter):
@@ -58,13 +60,18 @@ class KiPIDA_MainDialog(wx.Dialog):
         config_sizer = wx.BoxSizer(wx.VERTICAL)
         config_sizer.Add(self.power_tree, 1, wx.EXPAND | wx.ALL, 5)
         
-        # Global Settings (Grid Size, Debug)
+        # Global Settings (Grid Size, Drop %, Debug)
         sett_sizer = wx.BoxSizer(wx.HORIZONTAL)
         
         lbl_grid = wx.StaticText(self.tab_config, label="Mesh Resolution (mm):")
         self.txt_grid_size = wx.TextCtrl(self.tab_config, value="0.1", size=(60, -1))
         sett_sizer.Add(lbl_grid, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         sett_sizer.Add(self.txt_grid_size, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
+        
+        lbl_drop = wx.StaticText(self.tab_config, label="Max Drop %:")
+        self.txt_drop_pct = wx.TextCtrl(self.tab_config, value="5", size=(60, -1))
+        sett_sizer.Add(lbl_drop, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        sett_sizer.Add(self.txt_drop_pct, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 20)
         
         self.chk_debug = wx.CheckBox(self.tab_config, label="Enable Debug Log")
         sett_sizer.Add(self.chk_debug, 0, wx.ALIGN_CENTER_VERTICAL)
@@ -110,7 +117,7 @@ class KiPIDA_MainDialog(wx.Dialog):
     def _init_results_tab(self, parent):
         sizer = wx.BoxSizer(wx.VERTICAL)
         
-        # Splitter: Top=Text Stats, Bottom=Image
+        # Splitter: Top=Text Stats, Bottom=Notebook for plots
         self.result_splitter = wx.SplitterWindow(parent)
         
         self.pnl_text = wx.Panel(self.result_splitter)
@@ -119,27 +126,38 @@ class KiPIDA_MainDialog(wx.Dialog):
         text_sizer.Add(self.result_text, 1, wx.EXPAND | wx.ALL, 5)
         self.pnl_text.SetSizer(text_sizer)
         
-        self.pnl_image = wx.Panel(self.result_splitter)
-        image_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.pnl_plots = wx.Panel(self.result_splitter)
+        plot_sizer = wx.BoxSizer(wx.VERTICAL)
         
-        # Scrolled Window for image
-        self.scrolled_img = wx.ScrolledWindow(self.pnl_image, style=wx.HSCROLL | wx.VSCROLL)
-        self.scrolled_img.SetScrollRate(10, 10)
+        # Notebook for results (3D, Layer1, Layer2...)
+        self.results_notebook = wx.Notebook(self.pnl_plots)
+        plot_sizer.Add(self.results_notebook, 1, wx.EXPAND | wx.ALL, 0)
         
-        self.result_image = wx.StaticBitmap(self.scrolled_img)
+        self.pnl_plots.SetSizer(plot_sizer)
         
-        scrolled_sizer = wx.BoxSizer(wx.VERTICAL)
-        scrolled_sizer.Add(self.result_image, 1, wx.CENTER | wx.ALL, 5)
-        self.scrolled_img.SetSizer(scrolled_sizer)
-        
-        image_sizer.Add(self.scrolled_img, 1, wx.EXPAND | wx.ALL, 0)
-        self.pnl_image.SetSizer(image_sizer)
-        
-        self.result_splitter.SplitHorizontally(self.pnl_text, self.pnl_image, 100)
+        self.result_splitter.SplitHorizontally(self.pnl_text, self.pnl_plots, 100)
         self.result_splitter.SetMinimumPaneSize(50)
         
         sizer.Add(self.result_splitter, 1, wx.EXPAND | wx.ALL, 5)
         parent.SetSizer(sizer)
+
+    def _add_plot_tab(self, title, bitmap):
+        """Helper to add a plot tab securely."""
+        if not bitmap: return
+        
+        # Create a ScrolledWindow for the plot
+        page = wx.ScrolledWindow(self.results_notebook, style=wx.HSCROLL | wx.VSCROLL)
+        page.SetScrollRate(10, 10)
+        
+        img_ctrl = wx.StaticBitmap(page)
+        img_ctrl.SetBitmap(bitmap)
+        
+        sizer = wx.BoxSizer(wx.VERTICAL)
+        sizer.Add(img_ctrl, 1, wx.CENTER | wx.ALL, 5)
+        page.SetSizer(sizer)
+        
+        self.results_notebook.AddPage(page, title)
+
 
     def _init_log_tab(self, parent):
         sizer = wx.BoxSizer(wx.VERTICAL)
@@ -348,11 +366,50 @@ class KiPIDA_MainDialog(wx.Dialog):
                 
                 # --- 5. Visualize ---
                 mesh.results = results
-                bitmap = mesher.debug_plot(mesh, stackup)
-                if bitmap:
-                    self.result_image.SetBitmap(bitmap)
-                    self.scrolled_img.FitInside()
-                    self.notebook.SetSelection(1) # Results Tab
+                self.results_notebook.DeleteAllPages()
+
+                # Determine V_min/V_max for consistent scale
+                # Use rail voltage and drop % for scale
+                try:
+                    drop_pct_ui = float(self.txt_drop_pct.GetValue())
+                    if drop_pct_ui < 0: drop_pct_ui = 0
+                    if drop_pct_ui > 100: drop_pct_ui = 100
+                except:
+                    drop_pct_ui = 5.0
+                
+                v_max = rail.nominal_voltage
+                v_min = rail.nominal_voltage * (1.0 - drop_pct_ui / 100.0)
+
+                plotter = Plotter(debug=debug_mode)
+                
+                # Plot 3D
+                bmp_3d = plotter.plot_3d_mesh(mesh, stackup, vmin=v_min, vmax=v_max)
+                self._add_plot_tab("3D View", bmp_3d)
+
+                # Plot Layers
+                # Find unique layers in mesh
+                unique_layers = list(set(n[2] for n in mesh.node_coords.values()))
+                
+                # Sort by stackup order
+                if stackup and 'layer_order' in stackup:
+                    order_map = {lid: idx for idx, lid in enumerate(stackup['layer_order'])}
+                    unique_layers.sort(key=lambda lid: order_map.get(lid, 999))
+                else:
+                    unique_layers.sort()
+                
+                for lid in unique_layers:
+                    # Get Layer Name
+                    l_name = str(lid)
+                    if stackup and 'copper' in stackup and lid in stackup['copper']:
+                        l_name = stackup['copper'][lid].get('name', str(lid))
+                    elif hasattr(self.board, 'GetLayerName'):
+                        try: l_name = self.board.GetLayerName(lid)
+                        except: pass
+                        
+                    bmp_2d = plotter.plot_layer_2d(mesh, lid, stackup, vmin=v_min, vmax=v_max, layer_name=l_name)
+                    self._add_plot_tab(l_name, bmp_2d)
+
+                self.notebook.SetSelection(1) # Results Tab
 
         except Exception as e:
             self.log(f"Exception: {e}")
@@ -364,16 +421,17 @@ class KiPIDA_MainDialog(wx.Dialog):
             buf = extractor.plot_geometry(geo)
             if buf:
                 img = wx.Image(buf, wx.BITMAP_TYPE_PNG)
-                self.result_image.SetBitmap(wx.Bitmap(img))
-                self.scrolled_img.FitInside()
+                self.results_notebook.DeleteAllPages()
+                self._add_plot_tab("Geometry Debug", wx.Bitmap(img))
         except: pass
 
     def _debug_plot_mesh(self, mesher, mesh, stackup):
         try:
-            bmp = mesher.debug_plot(mesh, stackup)
+            plotter = Plotter(debug=self.chk_debug.GetValue())
+            bmp = plotter.plot_3d_mesh(mesh, stackup)
             if bmp:
-                self.result_image.SetBitmap(bmp)
-                self.scrolled_img.FitInside()
+                self.results_notebook.DeleteAllPages()
+                self._add_plot_tab("Mesh Debug", bmp)
         except: pass
 
     def on_close(self, event):
