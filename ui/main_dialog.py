@@ -1,6 +1,5 @@
 import wx
 import wx.dataview
-import pcbnew
 import sys
 import os
 
@@ -9,29 +8,41 @@ plugin_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if plugin_dir not in sys.path:
     sys.path.insert(0, plugin_dir)
 
-try:
-    from ..extractor import GeometryExtractor
-    from ..mesh import Mesher
-    from ..solver import Solver
-    from .power_tree_panel import PowerTreePanel
-except (ImportError, ValueError):
-    from extractor import GeometryExtractor
-    from mesh import Mesher
-    from solver import Solver
-    from ui.power_tree_panel import PowerTreePanel
+from extractor import GeometryExtractor
+from mesh import Mesher
+from solver import Solver
+from ui.power_tree_panel import PowerTreePanel
 
 class KiPIDA_MainDialog(wx.Dialog):
-    def __init__(self, parent):
+    def __init__(self, parent, board_adapter):
         super(KiPIDA_MainDialog, self).__init__(parent, title="Ki-PIDA: Power Integrity Analyzer", 
                                                 style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         
         self.SetSize((1000, 700))
         self.SetMinSize((800, 500))
         
-        self.board = pcbnew.GetBoard()
+        self.board = board_adapter
         
         self._init_ui()
         self.Center()
+        
+        # Redirect stdout/stderr to our log window
+        class LogRedirector:
+            def __init__(self, log_func):
+                self.log_func = log_func
+            def write(self, msg):
+                if msg.strip():
+                     self.log_func(msg.strip())
+            def flush(self): pass
+            
+        sys.stdout = LogRedirector(self.log)
+        sys.stderr = LogRedirector(self.log)
+        
+        self.log("Ki-PIDA UI Initialized.")
+        if not self.board:
+             self.log("ERROR: No board object connected. Plugin will not function properly.")
+        else:
+             self.log(f"Board object connected: {type(self.board)}")
         
     def _init_ui(self):
         main_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -41,7 +52,7 @@ class KiPIDA_MainDialog(wx.Dialog):
         
         # Tab 1: Configuration (New Power Tree Panel)
         self.tab_config = wx.Panel(self.notebook)
-        self.power_tree = PowerTreePanel(self.tab_config, self.board)
+        self.power_tree = PowerTreePanel(self.tab_config, self.board, log_callback=self.log)
         
         # Config Tab Layout
         config_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -92,6 +103,9 @@ class KiPIDA_MainDialog(wx.Dialog):
         # Bind events
         self.btn_run.Bind(wx.EVT_BUTTON, self.on_run)
         self.btn_cancel.Bind(wx.EVT_BUTTON, self.on_close)
+        
+        # Auto-scan board after UI is ready
+        wx.CallAfter(self.power_tree.auto_scan)
     
     def _init_results_tab(self, parent):
         sizer = wx.BoxSizer(wx.VERTICAL)
@@ -134,8 +148,14 @@ class KiPIDA_MainDialog(wx.Dialog):
         parent.SetSizer(sizer)
 
     def log(self, msg):
+        if not hasattr(self, 'log_ctrl'): return
         self.log_ctrl.AppendText(msg + "\n")
+        self.log_ctrl.ShowPosition(self.log_ctrl.GetLastPosition())
+        wx.SafeYield()
         
+    def to_mm(self, val_nm):
+        return val_nm / 1e6
+
     def on_run(self, event):
         rail = self.power_tree.active_rail
         if not rail:
@@ -155,7 +175,13 @@ class KiPIDA_MainDialog(wx.Dialog):
             
             # --- 1. Extraction ---
             extractor = GeometryExtractor(self.board, debug=debug_mode, log_callback=self.log)
-            stackup = extractor.get_board_stackup()
+            # Ensure we can get stackup
+            try:
+                stackup = extractor.get_board_stackup()
+            except Exception as e:
+                self.log(f"Error extracting stackup: {e}")
+                return
+                
             geo = extractor.get_net_geometry(net_name)
             
             if not geo:
@@ -174,7 +200,10 @@ class KiPIDA_MainDialog(wx.Dialog):
             
             mesher = Mesher(self.board, debug=debug_mode, log_callback=self.log)
             mesh = mesher.generate_mesh(net_name, geo, stackup, grid_size_mm=gs)
-            self.log(f"Mesh: {len(mesh.nodes)} nodes, {len(mesh.edges)} edges.")
+            
+            # Count edges from sparse matrix data (4 entries per edge)
+            edge_count = len(mesh.G_coo_data) // 4 if len(mesh.G_coo_data) > 0 else len(mesh.edges)
+            self.log(f"Mesh: {len(mesh.nodes)} nodes, {edge_count} edges.")
             
             if len(mesh.nodes) == 0:
                 self.log("Error: Mesh has 0 nodes.")
@@ -193,17 +222,58 @@ class KiPIDA_MainDialog(wx.Dialog):
             def get_mesh_nodes_for_component_pads(ref_des, pad_names):
                 """Helper to find mesh nodes corresponding to specific pads of a component."""
                 nodes = []
-                fp = self.board.FindFootprintByReference(ref_des)
+                
+                # Manual footprint lookup for kipy
+                fp = None
+                
+                # Robust get helper
+                def _get_val(o, n, d=None):
+                    if hasattr(o, n): return getattr(o, n)
+                    if hasattr(o, 'get_'+n): 
+                        try: return getattr(o, 'get_'+n)()
+                        except: pass
+                    return d
+                
+                # Get footprints robustly
+                board_fps = _get_val(self.board, 'footprints')
+                if not board_fps: board_fps = []
+                
+                for f in board_fps:
+                    # Robust Ref Des
+                    ref = _get_val(f, 'reference', _get_val(f, 'ref_des', ''))
+                    if not ref:
+                        # Try reference_field
+                        rf = _get_val(f, 'reference_field')
+                        if rf:
+                            txt = _get_val(rf, 'text')
+                            if txt: ref = _get_val(txt, 'value', '')
+                            
+                    if ref == ref_des:
+                        fp = f
+                        break
+                            
                 if not fp:
                     self.log(f"Warning: Footprint {ref_des} not found.")
                     return []
                 
+                # Robust pads
+                pads = _get_val(fp, 'pads')
+                if pads is None:
+                    defn = _get_val(fp, 'definition')
+                    pads = _get_val(defn, 'pads', [])
+                
                 for pad_name in pad_names:
-                    pad = fp.FindPadByNumber(pad_name)
+                    pad = None
+                    for p in pads:
+                        p_name = _get_val(p, 'number', _get_val(p, 'name', ''))
+                        if p_name == pad_name:
+                            pad = p
+                            break
+                                
                     if not pad: continue
                     
-                    pos = pad.GetPosition()
-                    px, py = pcbnew.ToMM(pos.x), pcbnew.ToMM(pos.y)
+                    pos = pad.position # Protobuf: position object with x, y
+                    px, py = self.to_mm(pos.x), self.to_mm(pos.y)
                     
                     # Convert to grid
                     tx = int(round((px - origin[0]) / grid_step))
@@ -256,7 +326,7 @@ class KiPIDA_MainDialog(wx.Dialog):
                 self.log("Error: No valid source nodes found on mesh. Cannot solve.")
             else:
                 self.log("Solving...")
-                solver = Solver()
+                solver = Solver(debug=debug_mode, log_callback=self.log)
                 results = solver.solve(mesh, solver_sources, solver_loads)
                 
                 # Stats

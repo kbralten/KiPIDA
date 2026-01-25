@@ -1,0 +1,6 @@
+numpy
+scipy
+shapely
+matplotlib
+kicad-python
+pypardiso

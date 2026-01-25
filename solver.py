@@ -17,7 +17,8 @@ except ImportError:
     pypardiso = None
 
 class Solver:
-    def __init__(self, log_callback=None):
+    def __init__(self, debug=False, log_callback=None):
+        self.debug = debug
         self.log_callback = log_callback
         if np is None or scipy is None:
             raise ImportError("NumPy and SciPy are required for Solver backend.")
@@ -50,7 +51,8 @@ class Solver:
         
         # 2. Build Matrix G
         if hasattr(mesh, 'G_coo_data') and len(mesh.G_coo_data) > 0:
-            self._log(f"Using pre-computed sparse matrix ({len(mesh.G_coo_data)} entries).")
+            if self.debug:
+                self._log(f"Using pre-computed sparse matrix ({len(mesh.G_coo_data)} entries).")
             # We have raw node IDs in G_coo_row/col, need to map to indices 0..N-1
             # Optimally, Mesher should produce 0..N indices, but it deals with arbitrary node IDs.
             # If node IDs are 0..N-1 sequential (which they are in Mesher implementation), we can skip mapping?
@@ -73,7 +75,8 @@ class Solver:
             G = G.tolil()
             
         else:
-            self._log("Using legacy edge iteration for matrix build.")
+            if self.debug:
+                self._log("Using legacy edge iteration for matrix build.")
             # Legacy Path (Slow)
             G = scipy.sparse.lil_matrix((N, N))
             for u_id, v_id, g in mesh.edges:
@@ -139,10 +142,10 @@ class Solver:
             
         try:
             if pypardiso is not None:
-                self._log("Using high-performance PyPardiso solver.")
+                if self.debug: self._log("Using high-performance PyPardiso solver.")
                 V_solution = pypardiso.spsolve(G_csr, I)
             else:
-                self._log("Using standard SciPy spsolve (PyPardiso not found).")
+                if self.debug: self._log("Using standard SciPy spsolve (PyPardiso not found).")
                 V_solution = scipy.sparse.linalg.spsolve(G_csr, I)
             
             if np.any(np.isnan(V_solution)):

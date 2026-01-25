@@ -1,7 +1,10 @@
 
-import pcbnew
 import sys
 import math
+
+# Use explicit check if needed, but we assume kipy objects are passed
+def to_mm(val):
+    return val / 1e6
 
 try:
     import numpy as np
@@ -58,6 +61,31 @@ class Mesher:
         if np is None or Point is None or matplotlib is None:
             raise ImportError("NumPy, Shapely, and Matplotlib are required for Meshing.")
     
+    def _get_val(self, obj, attr_name, default=None):
+        """Robustly get attribute value from object (property or getter)."""
+        if obj is None: return default
+        if hasattr(obj, attr_name):
+            val = getattr(obj, attr_name)
+            if val is not None: return val
+        for prefix in ["get_", ""]:
+            method_name = prefix + attr_name
+            if hasattr(obj, method_name):
+                try:
+                    val = getattr(obj, method_name)()
+                    if val is not None: return val
+                except: pass
+        return default
+
+    def _get_board_items(self, attr_name):
+        """Robustly get items from board (property or getter)."""
+        if hasattr(self.board, attr_name):
+            return getattr(self.board, attr_name)
+        method_name = f"get_{attr_name}"
+        if hasattr(self.board, method_name):
+            try: return getattr(self.board, method_name)()
+            except: pass
+        return []
+
     def _log(self, msg):
         """Helper to log debug messages."""
         if self.debug and self.log_callback:
@@ -227,7 +255,8 @@ class Mesher:
                     # Nodes at (y, x+1)
                     v_ids = node_grid[layer_map[lid], y_r, x_r + 1]
                     
-                    self._bulk_add_edges(mesh, u_ids, v_ids, g_lat_val)
+                    for u, v in zip(u_ids, v_ids):
+                         mesh.add_edge_direct(u, v, g_lat_val)
                 
                 # Vertical (Top) Neighbors (x, y) <-> (x, y+1)
                 top_mask = mask_2d[:-1, :] & mask_2d[1:, :]
@@ -238,26 +267,62 @@ class Mesher:
                     # Nodes at (y+1, x)
                     v_ids = node_grid[layer_map[lid], y_t + 1, x_t]
                     
-                    self._bulk_add_edges(mesh, u_ids, v_ids, g_lat_val)
+                    for u, v in zip(u_ids, v_ids):
+                         mesh.add_edge_direct(u, v, g_lat_val)
 
             if self.debug:
                 self._log(f"  Layer {lid} vectorized mesh: {count_on_layer} nodes.")
 
-        # 5. Vertical Connections (Vias & PTH) - Unchanged logic, but updated to use new map
-        
+        # 5. Vertical Connections (Vias & PTH)
         if self.log_callback:
             self.log_callback("Adding vertical interconnects...")
-        net = self.board.FindNet(net_name)
-        if net:
-            net_code = net.GetNetCode()
-            for track in self.board.GetTracks():
-                if track.GetNetCode() == net_code and isinstance(track, pcbnew.PCB_VIA):
-                    self._add_vertical_link(mesh, track, stackup)
+        
+        # Helper to check if item matches net
+        def match_net(item, name):
+            net = self._get_val(item, 'net')
+            n_name = self._get_val(net, 'name', "")
+            return n_name == name
+
+        # Get vias using proper API
+        vias = self._get_board_items('vias')
+        for via in vias:
+            if match_net(via, net_name):
+                self._add_vertical_link(mesh, via, stackup)
                     
-            for fp in self.board.GetFootprints():
-                for pad in fp.Pads():
-                    if pad.GetNetCode() == net_code and pad.GetAttribute() == pcbnew.PAD_ATTRIB_PTH:
-                        self._add_vertical_stack(mesh, pad.GetPosition(), layers=None, diameter=pcbnew.ToMM(pad.GetDrillSize().x), stackup=stackup)
+        footprints = self._get_board_items('footprints')
+        for fp in footprints:
+            pads = self._get_val(fp, 'pads')
+            if pads is None:
+                defn = self._get_val(fp, 'definition')
+                pads = self._get_val(defn, 'pads', [])
+                
+            for pad in pads:
+                if match_net(pad, net_name):
+                    # Check if PTH using numeric pad_type value
+                    # pad_type: 0=SMD, 1=PTH, 2=CONN, 3=NPTH
+                    p_type_val = self._get_val(pad, 'pad_type', None)
+                    p_type_str = str(self._get_val(pad, 'type', ''))
+                    
+                    is_pth = (p_type_val == 1) or ('THROUGH' in p_type_str and 'NON' not in p_type_str)
+                    
+                    if is_pth:
+                            # Drill Size
+                            drill_size = self._get_val(pad, 'drill_size')
+                            d_x = self._get_val(drill_size, 'x', 0)
+                            
+                            pos = self._get_val(pad, 'position')
+                            
+                            # Get layers from padstack
+                            layers = self._get_val(pad, 'layers')
+                            if not layers:
+                                ps = self._get_val(pad, 'padstack')
+                                if ps:
+                                    layers = self._get_val(ps, 'layers')
+                            
+                            self._add_vertical_stack(mesh, pos, 
+                                                    layers=layers, 
+                                                    diameter=to_mm(d_x), 
+                                                    stackup=stackup)
 
         return mesh
 
@@ -289,7 +354,6 @@ class Mesher:
         mesh.G_coo_data.extend(np.concatenate(data))
 
     def _calculate_vertical_g(self, layer_a, layer_b, stackup, diameter_mm):
-        # ... logic unchanged from previous implementation ...
         if layer_a == layer_b: return 1.0e9
         plating_thick = 0.025 
         area = math.pi * (diameter_mm * plating_thick - plating_thick**2)
@@ -305,42 +369,98 @@ class Mesher:
         if h <= 0: h = 0.5 
         return area / (rho * h)
 
-    def _add_vertical_link(self, mesh, via, stackup):
-        layers = sorted(list(via.GetLayerSet().Seq()))
-        if not layers: return
-        start_id, end_id = min(layers), max(layers)
-        pos = via.GetPosition()
-        x_mm, y_mm = pcbnew.ToMM(pos.x), pcbnew.ToMM(pos.y)
-        ix = int(round((x_mm - mesh.grid_origin[0]) / mesh.grid_step))
-        iy = int(round((y_mm - mesh.grid_origin[1]) / mesh.grid_step))
+    def _get_best_node_in_radius(self, mesh, x_mm, y_mm, layer, radius_mm):
+        """Find a node for the via/pad on the given layer."""
+        ix_center = int(round((x_mm - mesh.grid_origin[0]) / mesh.grid_step))
+        iy_center = int(round((y_mm - mesh.grid_origin[1]) / mesh.grid_step))
         
-        all_cu_layers = sorted(stackup['copper'].keys())
-        nodes_in_stack = []
-        for lid in all_cu_layers:
-            if start_id <= lid <= end_id:
-                nid = mesh.node_map.get((ix, iy, lid))
+        # 1. Try exact center first
+        nid = mesh.node_map.get((ix_center, iy_center, layer))
+        if nid is not None:
+            return nid
+            
+        # 2. Try immediate 3x3 neighborhood (radius 1)
+        # This is essential for small vias on coarse grids.
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                if dx == 0 and dy == 0: continue
+                nid = mesh.node_map.get((ix_center + dx, iy_center + dy, layer))
                 if nid is not None:
-                    nodes_in_stack.append(nid)
+                    # Optional: Could check distance here, but first-found is usually fine
+                    # for discrete grid nodes. 
+                    return nid
+                    
+        # 3. For larger pads, try a wider search if needed
+        full_search_radius = int(np.ceil(radius_mm / mesh.grid_step))
+        if full_search_radius > 1:
+            for r in range(2, full_search_radius + 1):
+                for dx in range(-r, r + 1):
+                    for dy in range(-r, r + 1):
+                        if abs(dx) < r and abs(dy) < r: continue
+                        nid = mesh.node_map.get((ix_center + dx, iy_center + dy, layer))
+                        if nid is not None:
+                            return nid
+        return None
+
+    def _add_vertical_link(self, mesh, via, stackup):
+        """Adds vertical connectivity for a via."""
+        layers = self._get_val(via, 'layers')
+        if not layers:
+            ps = self._get_val(via, 'padstack')
+            if ps:
+                layers = self._get_val(ps, 'layers')
         
-        drill_dia = pcbnew.ToMM(via.GetDrillValue())
+        if not layers:
+            lp = self._get_val(via, 'layer_pair')
+            if lp:
+                s_lid, e_lid = min(lp), max(lp)
+                all_cu = sorted(stackup['copper'].keys())
+                layers = [l for l in all_cu if s_lid <= l <= e_lid]
+            else:
+                # Default to all copper layers
+                layers = list(stackup['copper'].keys())
+
+        pos = getattr(via, 'start', None)
+        if not pos: 
+             pos = getattr(via, 'position', None)
+             
+        if not pos: return
+
+        x_mm, y_mm = to_mm(pos.x), to_mm(pos.y)
+        dia_mm = to_mm(self._get_val(via, 'width', 0.6*1e6))
+        radius_mm = dia_mm / 2.0
+        
+        nodes_in_stack = []
+        # Sort layers to ensure vertical sequence
+        sorted_via_layers = sorted(list(layers))
+        for lid in sorted_via_layers:
+            nid = self._get_best_node_in_radius(mesh, x_mm, y_mm, lid, radius_mm)
+            if nid is not None:
+                nodes_in_stack.append(nid)
+        
+        if self.debug and len(nodes_in_stack) < 2:
+            self._log(f"      [VIA] Failed to connect layers @ ({x_mm:.2f}, {y_mm:.2f}): found nodes on layers {[mesh.node_coords[n][2] for n in nodes_in_stack]}")
+
         for i in range(len(nodes_in_stack) - 1):
             nid_a = nodes_in_stack[i]
             nid_b = nodes_in_stack[i+1]
             la = mesh.node_coords[nid_a][2]
             lb = mesh.node_coords[nid_b][2]
-            g_via = self._calculate_vertical_g(la, lb, stackup, drill_dia)
+            g_via = self._calculate_vertical_g(la, lb, stackup, dia_mm)
             mesh.add_edge_direct(nid_a, nid_b, g_via)
 
     def _add_vertical_stack(self, mesh, pos, layers, diameter, stackup):
-        if layers is None:
+        if layers is None or len(layers) == 0:
             layers = sorted(stackup['copper'].keys())
-        x_mm, y_mm = pcbnew.ToMM(pos.x), pcbnew.ToMM(pos.y)
-        ix = int(round((x_mm - mesh.grid_origin[0]) / mesh.grid_step))
-        iy = int(round((y_mm - mesh.grid_origin[1]) / mesh.grid_step))
+        else:
+             layers = sorted(list(layers))
+             
+        x_mm, y_mm = to_mm(pos.x), to_mm(pos.y)
+        radius_mm = diameter / 2.0
         
         nodes_in_stack = []
         for layer in layers:
-            nid = mesh.node_map.get((ix, iy, layer))
+            nid = self._get_best_node_in_radius(mesh, x_mm, y_mm, layer, radius_mm)
             if nid is not None:
                 nodes_in_stack.append(nid)
                 
@@ -377,7 +497,7 @@ class Mesher:
             
             for nid, (x, y, layer) in mesh.node_coords.items():
                 xs.append(x)
-                ys.append(y)
+                ys.append(-y)  # Invert Y to match KiCad coordinate system
                 zs.append(layer_to_z.get(layer, 10 - layer * 0.5))
                 c.append(mesh.results.get(nid, 0.0) if has_results else layer)
                 
@@ -386,7 +506,6 @@ class Mesher:
                 plt.colorbar(sc, label='Voltage (V)', shrink=0.8)
             
             ax.set_xlabel('X (mm)'); ax.set_ylabel('Y (mm)'); ax.set_zlabel('L (pseudo)')
-            ax.invert_yaxis()
             
             # Set equal aspect ratio for X and Y to show correct geometry proportions
             x_limits = ax.get_xlim3d()
@@ -415,7 +534,9 @@ class Mesher:
             import os
             filename = 'debug_mesh_solved.png' if has_results else 'debug_mesh_presolved.png'
             output_path = os.path.join(os.path.dirname(__file__), filename)
-            plt.savefig(output_path, format='png', dpi=150, bbox_inches='tight')
+            
+            if self.debug:
+                plt.savefig(output_path, format='png', dpi=150, bbox_inches='tight')
             
             buf = io.BytesIO()
             plt.savefig(buf, format='png', dpi=120, bbox_inches='tight')
