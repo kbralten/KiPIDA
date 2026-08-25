@@ -1,5 +1,5 @@
 import json
-from typing import List
+from typing import List, Optional, Union
 from pathlib import Path
 
 try:
@@ -8,6 +8,29 @@ except (ImportError, ValueError):
     from models import PowerRail, UnifiedSource, UnifiedLoad, VoltageRegulator, ComponentRef
 
 CONFIG_VERSION = "1.0"
+
+
+def get_project_config_path(
+    project_path: Union[str, Path], project_name: Optional[str] = None
+) -> Path:
+    """Return the sidecar config path for a KiCad project or board path.
+
+    KiCad 10's IPC API exposes ``Project.path`` as the ``.kicad_pro`` file,
+    whereas older integrations can expose a project directory. Supporting both
+    shapes keeps the config file beside the project rather than trying to
+    create a directory underneath the project file.
+    """
+    path = Path(project_path)
+    is_project_file = path.suffix.lower() in {".kicad_pro", ".pro"}
+
+    if is_project_file:
+        directory = path.parent
+        config_stem = path.stem
+    else:
+        directory = path
+        config_stem = project_name or path.name
+
+    return directory / f"{config_stem}.kipida.json"
 
 def save_config(rails: List[PowerRail], filepath: str):
     """

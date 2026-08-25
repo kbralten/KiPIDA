@@ -6,14 +6,14 @@ try:
     from ui.component_selector import ComponentSelectorDialog
     from ui.regulator_dialog import RegulatorDialog
     from discovery import NetDiscoverer
-    from config_manager import save_config, load_config
+    from config_manager import get_project_config_path, save_config, load_config
 except (ImportError, ValueError):
     # Fallback or just re-raise if absolute fails (shouldn't happen with sys.path set)
     from models import PowerRail, UnifiedSource, UnifiedLoad, ComponentRef, VoltageRegulator
     from ui.component_selector import ComponentSelectorDialog
     from ui.regulator_dialog import RegulatorDialog
     from discovery import NetDiscoverer
-    from config_manager import save_config, load_config
+    from config_manager import get_project_config_path, save_config, load_config
 
 class NetSelectionDialog(wx.Dialog):
     def __init__(self, parent, nets):
@@ -599,11 +599,11 @@ class PowerTreePanel(wx.Panel):
             from pathlib import Path
             
             # Use project object if available (IPC API)
-            if self.project and hasattr(self.project, 'path') and hasattr(self.project, 'name'):
-                project_path = Path(self.project.path)
-                config_filename = f"{self.project.name}.kipida.json"
-                config_path = project_path / config_filename
-                return config_path
+            if self.project and hasattr(self.project, 'path'):
+                return get_project_config_path(
+                    self.project.path,
+                    getattr(self.project, 'name', None),
+                )
             
             # Fallback: try to get from board (legacy)
             if hasattr(self.board, 'filename'):
@@ -617,7 +617,7 @@ class PowerTreePanel(wx.Panel):
             if not project_file:
                 return None
             
-            # Convert to Path and get directory + stem
+            # Board filenames are stored beside the generated configuration.
             project_path = Path(project_file)
             config_filename = f"{project_path.stem}.kipida.json"
             config_path = project_path.parent / config_filename

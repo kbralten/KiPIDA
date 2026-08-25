@@ -9,10 +9,26 @@ plugin_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if plugin_dir not in sys.path:
     sys.path.insert(0, plugin_dir)
 
-from config_manager import save_config, load_config
+from config_manager import get_project_config_path, save_config, load_config
 from models import PowerRail, UnifiedSource, UnifiedLoad, VoltageRegulator, ComponentRef
 
 class TestConfigManager(unittest.TestCase):
+
+    def test_kicad_10_project_file_config_path(self):
+        project_file = Path(r"C:\projects\p02_alimentation\p02_alimentation.kicad_pro")
+
+        self.assertEqual(
+            get_project_config_path(project_file, "p02_alimentation"),
+            Path(r"C:\projects\p02_alimentation\p02_alimentation.kipida.json"),
+        )
+
+    def test_project_directory_config_path(self):
+        project_dir = Path(r"C:\projects\p02_alimentation")
+
+        self.assertEqual(
+            get_project_config_path(project_dir, "p02_alimentation"),
+            project_dir / "p02_alimentation.kipida.json",
+        )
     
     def setUp(self):
         """Create sample power network configuration."""
