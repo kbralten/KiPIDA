@@ -12,6 +12,7 @@ if plugin_dir not in sys.path:
 # For CI/headless correctness without wx installed, we often mock wx.
 # Let's simple-mock wx to ensure logic runs even if system python doesn't have wx (though user python likely does)
 import types
+from types import SimpleNamespace
 if 'wx' not in sys.modules:
     wx_mock = types.ModuleType('wx')
     wx_mock.Bitmap = lambda *args: "BITMAP_OBJECT"
@@ -63,6 +64,21 @@ class TestPlotter(unittest.TestCase):
         # Layer 99 empty
         bmp = self.plotter.plot_layer_2d(self.mesh, 99, self.stackup)
         self.assertIsNone(bmp)
+
+    def test_plot_impedance_sweep(self):
+        baseline = SimpleNamespace(
+            frequencies_hz=[1e3, 1e4, 1e5],
+            impedance_ohm=[0.05 + 0j, 0.04 - 0.01j, 0.08 + 0.02j],
+            target_impedance_ohm=0.06,
+        )
+        optimized = SimpleNamespace(
+            frequencies_hz=baseline.frequencies_hz,
+            impedance_ohm=[0.04 + 0j, 0.03 - 0.01j, 0.05 + 0.01j],
+        )
+
+        bitmap = self.plotter.plot_impedance_sweep(baseline, optimized)
+
+        self.assertIsNotNone(bitmap)
 
 if __name__ == '__main__':
     unittest.main()
