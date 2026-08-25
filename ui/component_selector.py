@@ -22,12 +22,16 @@ class ComponentSelectorDialog(wx.Dialog):
             # Hide value input for sources (voltage is set at rail level)
             self.lbl_val.Hide()
             self.txt_val.Hide()
+            self.lbl_thermal_mode.Hide()
+            self.cmb_thermal_mode.Hide()
         else:
             self.lbl_instruction.SetLabel("Select Component to use as Load:")
             self.lbl_val.SetLabel("Current (A):")
             self.txt_val.SetValue("1.0")
             self.lbl_val.Show()
             self.txt_val.Show()
+            self.lbl_thermal_mode.Show()
+            self.cmb_thermal_mode.Show()
             
     def _init_ui(self):
         panel = wx.Panel(self)
@@ -59,6 +63,18 @@ class ComponentSelectorDialog(wx.Dialog):
         h_val.Add(self.lbl_val, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         h_val.Add(self.txt_val, 1, wx.EXPAND)
         vbox.Add(h_val, 0, wx.EXPAND | wx.ALL, 5)
+
+        h_thermal = wx.BoxSizer(wx.HORIZONTAL)
+        self.lbl_thermal_mode = wx.StaticText(panel, label="Thermal load:")
+        self.cmb_thermal_mode = wx.ComboBox(
+            panel,
+            choices=["AUTO", "LOCAL", "EXTERNAL"],
+            style=wx.CB_READONLY,
+        )
+        self.cmb_thermal_mode.SetValue("AUTO")
+        h_thermal.Add(self.lbl_thermal_mode, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
+        h_thermal.Add(self.cmb_thermal_mode, 1, wx.EXPAND)
+        vbox.Add(h_thermal, 0, wx.EXPAND | wx.LEFT | wx.RIGHT | wx.BOTTOM, 5)
         
         # Pad selection
         vbox.Add(wx.StaticText(panel, label="Select Pads:"), 0, wx.ALL, 5)
@@ -156,7 +172,11 @@ class ComponentSelectorDialog(wx.Dialog):
             return ref, val, pads
         return None, 0.0, []
 
-    def prepopulate(self, ref_des, value, pads):
+    def GetThermalMode(self):
+        """Return how this electrical load contributes heat to this PCB."""
+        return self.cmb_thermal_mode.GetValue() or "AUTO"
+
+    def prepopulate(self, ref_des, value, pads, thermal_mode="AUTO"):
         """Pre-set the dialog state for editing"""
         idx = self.lst_comps.FindString(ref_des)
         if idx != wx.NOT_FOUND:
@@ -166,6 +186,10 @@ class ComponentSelectorDialog(wx.Dialog):
             # Set value
             if self.mode == "LOAD":
                 self.txt_val.SetValue(str(value))
+                mode = str(thermal_mode or "AUTO").upper()
+                self.cmb_thermal_mode.SetValue(
+                    mode if mode in {"AUTO", "LOCAL", "EXTERNAL"} else "AUTO"
+                )
             
             # Set pads
             all_comp_pads = [self.pad_list.GetString(i) for i in range(self.pad_list.GetCount())]

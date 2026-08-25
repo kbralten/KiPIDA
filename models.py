@@ -28,11 +28,15 @@ class UnifiedLoad:
     """
     Represents a component acting as a current load.
     distribution_mode: 'UNIFORM' divides current equally among enabled pads.
+    thermal_mode controls whether the electrical load is also dissipated on
+    this PCB: AUTO treats connector references (J*) as exported power, LOCAL
+    converts V * I to heat, and EXTERNAL excludes it from local heat sources.
     """
     component_ref: ComponentRef
     total_current: float = 0.0
     pad_names: List[str] = field(default_factory=list)
-    distribution_mode: str = "UNIFORM" 
+    distribution_mode: str = "UNIFORM"
+    thermal_mode: str = "AUTO"
 
 @dataclass
 class VoltageRegulator:
@@ -52,6 +56,10 @@ class VoltageRegulator:
     
     reg_type: str = "LINEAR"  # "LINEAR" or "SWITCHING"
     efficiency: float = 0.85  # Only used if SWITCHING. 0.0-1.0
+    # Physical component receiving the estimated conversion loss. Connectivity
+    # output references are often inductors, so they must not double as a
+    # thermal placement hint. Empty means the input component.
+    thermal_ref_des: str = ""
 
 @dataclass
 class PowerRail:

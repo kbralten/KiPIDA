@@ -227,7 +227,7 @@ class ThermalAnalysisPanel(wx.Panel):
         self.chk_edges.SetValue(airflow.expose_edges)
         self.chk_radiation.SetValue(self.settings.include_radiation)
         self.chk_dc_loss.SetValue(self.settings.include_dc_copper_losses)
-        if not self.settings.components:
-            self.refresh_components(preserve_user=False)
-        else:
-            self._update_component_list()
+        # Recompute all automatic entries when loading a project so configs
+        # saved by older versions cannot retain V*I connector heat or output-
+        # inductor regulator placement. Explicit user models remain untouched.
+        self.refresh_components(preserve_user=True)

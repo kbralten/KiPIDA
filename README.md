@@ -122,10 +122,15 @@ The optimizer is intentionally non-destructive: it reports footprint/value recom
    - **Natural:** uses a conservative natural-convection coefficient.
    - **Forced:** derives the coefficient from air speed and applies the configured flow direction across the board surface.
    - **Custom:** uses a user-supplied heat-transfer coefficient.
-3. Choose **Refresh Power Estimates**. Load dissipation is estimated as `V × I`; regulator dissipation uses LDO voltage drop or switching efficiency. Double-click any component to enter a reviewed power and compact package thermal model.
-4. Choose **Run Thermal** for a single steady-state solve. Enable **Include DC copper losses** to reuse losses from the DC branch solution.
-5. Choose **Run Coupled** to iterate copper resistance, DC branch loss, and board temperature. Review the hotspot, energy balance, component junction estimates, and 3D/top/bottom plots in **Results**.
-6. Save the project configuration to persist the thermal profile in `<project>.kipida.json`.
+3. Classify each electrical load with **Thermal load** in its Power Tree dialog:
+   - **Auto:** connector references (`J*`) export power off-board; other loads dissipate locally.
+   - **Local:** converts the rail load to local heat using `V × I`.
+   - **External:** retains the current for upstream regulator sizing but injects `0 W` on this PCB.
+4. For each regulator, select the **Thermal loss component** independently from its connectivity endpoints. By default, conversion loss is placed on the input component, avoiding accidental placement on an output inductor.
+5. Choose **Refresh Power Estimates**. Regulator dissipation uses LDO voltage drop or switching efficiency. External loads remain visible as zero-watt rows so they can be reviewed or overridden. Double-click any component to enter a reviewed power and compact package thermal model.
+6. Choose **Run Thermal** for a single steady-state solve. Enable **Include DC copper losses** to reuse losses from the DC branch solution.
+7. Choose **Run Coupled** to iterate copper resistance, DC branch loss, and board temperature. Review the hotspot, energy balance, component junction estimates, and 3D/top/bottom plots in **Results**.
+8. Save the project configuration to persist the thermal profile in `<project>.kipida.json`.
 
 The airflow model applies convective boundary conditions to the 3D solid board mesh. It is intended for board-level design comparison and hotspot screening; it is not a volumetric CFD enclosure or fan model. Component junction temperatures use the configured compact `theta-JB` estimate and therefore require engineering review before sign-off.
 

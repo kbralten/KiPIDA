@@ -317,7 +317,7 @@ class PowerTreePanel(wx.Panel):
                 s = UnifiedSource(ref, pads)
                 self.active_rail.add_source(s)
             else:
-                l = UnifiedLoad(ref, val, pads)
+                l = UnifiedLoad(ref, val, pads, thermal_mode=dlg.GetThermalMode())
                 self.active_rail.add_load(l)
                 
             self.refresh_comp_list()
@@ -427,13 +427,19 @@ class PowerTreePanel(wx.Panel):
         
         dlg = ComponentSelectorDialog(self, "Edit Load", self.active_rail.net_name, available_comps)
         dlg.set_mode("LOAD")
-        dlg.prepopulate(comp_obj.component_ref.ref_des, comp_obj.total_current, comp_obj.pad_names)
+        dlg.prepopulate(
+            comp_obj.component_ref.ref_des,
+            comp_obj.total_current,
+            comp_obj.pad_names,
+            comp_obj.thermal_mode,
+        )
         
         if dlg.ShowModal() == wx.ID_OK:
             ref_des, val, pads = dlg.GetSelection()
             comp_obj.component_ref.ref_des = ref_des
             comp_obj.pad_names = pads
             comp_obj.total_current = val
+            comp_obj.thermal_mode = dlg.GetThermalMode()
             self.refresh_comp_list()
         
         dlg.Destroy()
@@ -468,6 +474,7 @@ class PowerTreePanel(wx.Panel):
             reg.output_pad_names = data['output_pads']
             reg.reg_type = data['type']
             reg.efficiency = data['efficiency']
+            reg.thermal_ref_des = data['thermal_ref_des']
             
             # If input rail changed, move regulator to new rail
             if data['input_rail'] != self.active_rail.net_name:
@@ -531,6 +538,7 @@ class PowerTreePanel(wx.Panel):
             reg.output_pad_names = data['output_pads']
             reg.reg_type = data['type']
             reg.efficiency = data['efficiency']
+            reg.thermal_ref_des = data['thermal_ref_des']
             
             # If input rail changed, move regulator
             if data['input_rail'] != source_rail.net_name:
@@ -564,7 +572,8 @@ class PowerTreePanel(wx.Panel):
                 output_ref_des=data['output_ref_des'],
                 output_pad_names=data['output_pads'],
                 reg_type=data['type'],
-                efficiency=data['efficiency']
+                efficiency=data['efficiency'],
+                thermal_ref_des=data['thermal_ref_des'],
             )
             
             # Add to the INPUT rail (which is self.active_rail)

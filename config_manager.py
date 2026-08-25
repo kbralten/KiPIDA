@@ -21,8 +21,8 @@ except (ImportError, ValueError):
         UnifiedSource, VoltageRegulator,
     )
 
-CONFIG_VERSION = "1.3"
-SUPPORTED_CONFIG_VERSIONS = {"1.0", "1.1", "1.2", CONFIG_VERSION}
+CONFIG_VERSION = "1.4"
+SUPPORTED_CONFIG_VERSIONS = {"1.0", "1.1", "1.2", "1.3", CONFIG_VERSION}
 
 
 def get_project_config_path(
@@ -165,7 +165,8 @@ def _load_to_dict(load: UnifiedLoad) -> dict:
         "ref_des": load.component_ref.ref_des,
         "total_current": load.total_current,
         "pad_names": load.pad_names,
-        "distribution_mode": load.distribution_mode
+        "distribution_mode": load.distribution_mode,
+        "thermal_mode": load.thermal_mode,
     }
 
 def _dict_to_load(data: dict) -> UnifiedLoad:
@@ -174,7 +175,8 @@ def _dict_to_load(data: dict) -> UnifiedLoad:
         component_ref=ComponentRef(ref_des=data["ref_des"]),
         total_current=data.get("total_current", 0.0),
         pad_names=data.get("pad_names", []),
-        distribution_mode=data.get("distribution_mode", "UNIFORM")
+        distribution_mode=data.get("distribution_mode", "UNIFORM"),
+        thermal_mode=data.get("thermal_mode", "AUTO"),
     )
 
 def _regulator_to_dict(reg: VoltageRegulator) -> dict:
@@ -188,7 +190,8 @@ def _regulator_to_dict(reg: VoltageRegulator) -> dict:
         "output_ref_des": reg.output_ref_des,
         "output_pad_names": reg.output_pad_names,
         "reg_type": reg.reg_type,
-        "efficiency": reg.efficiency
+        "efficiency": reg.efficiency,
+        "thermal_ref_des": reg.thermal_ref_des,
     }
 
 def _dict_to_regulator(data: dict) -> VoltageRegulator:
@@ -202,7 +205,8 @@ def _dict_to_regulator(data: dict) -> VoltageRegulator:
         output_ref_des=data["output_ref_des"],
         output_pad_names=data.get("output_pad_names", []),
         reg_type=data.get("reg_type", "LINEAR"),
-        efficiency=data.get("efficiency", 0.85)
+        efficiency=data.get("efficiency", 0.85),
+        thermal_ref_des=data.get("thermal_ref_des", ""),
     )
 
 

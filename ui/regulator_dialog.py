@@ -6,7 +6,7 @@ except ImportError:
 
 class RegulatorDialog(wx.Dialog):
     def __init__(self, parent, title, available_rails, discoverer, input_rail=None, output_rail=None):
-        super(RegulatorDialog, self).__init__(parent, title=title, size=(500, 600))
+        super(RegulatorDialog, self).__init__(parent, title=title, size=(500, 650))
         
         self.available_rails = sorted(available_rails)
         self.discoverer = discoverer
@@ -15,6 +15,7 @@ class RegulatorDialog(wx.Dialog):
         
         self.input_comps = {} # ref -> [pads]
         self.output_comps = {} # ref -> [pads]
+        self._last_input_ref = ""
         
         self._init_ui()
         self.Centre()
@@ -100,6 +101,14 @@ class RegulatorDialog(wx.Dialog):
         self.txt_eff = wx.TextCtrl(sb_param.GetStaticBox(), value="0.85")
         self.txt_eff.Disable()
         grid_p.Add(self.txt_eff, 1, wx.EXPAND)
+
+        grid_p.Add(wx.StaticText(
+            sb_param.GetStaticBox(), label="Thermal loss component:"
+        ), 0, wx.ALIGN_CENTER_VERTICAL)
+        self.cmb_thermal_comp = wx.ComboBox(
+            sb_param.GetStaticBox(), choices=[], style=wx.CB_READONLY
+        )
+        grid_p.Add(self.cmb_thermal_comp, 1, wx.EXPAND)
         
         grid_p.AddGrowableCol(1, 1)
         sb_param.Add(grid_p, 1, wx.EXPAND | wx.ALL, 5)
@@ -134,6 +143,10 @@ class RegulatorDialog(wx.Dialog):
         pad_names = [getattr(p, 'number', getattr(p, 'name', str(p))) for p in pads]
         self.lst_input_pads.Set(pad_names) 
         self._update_auto_name()
+        thermal_ref = self.cmb_thermal_comp.GetValue()
+        preferred = ref if not thermal_ref or thermal_ref == self._last_input_ref else None
+        self._last_input_ref = ref
+        self._update_thermal_components(preferred)
 
     def _on_output_rail_change(self, event):
         rail = self.cmb_output_rail.GetValue()
@@ -154,6 +167,25 @@ class RegulatorDialog(wx.Dialog):
         pad_names = [getattr(p, 'number', getattr(p, 'name', str(p))) for p in pads]
         self.lst_output_pads.Set(pad_names)
         self._update_auto_name()
+        self._update_thermal_components()
+
+    def _update_thermal_components(self, preferred=None):
+        """Keep thermal placement independent from connectivity endpoints."""
+        current = preferred or self.cmb_thermal_comp.GetValue()
+        refs = set(self.input_comps) | set(self.output_comps)
+        refs.update(filter(None, (
+            self.cmb_input_comp.GetValue(),
+            self.cmb_output_comp.GetValue(),
+            preferred,
+        )))
+        choices = sorted(refs)
+        self.cmb_thermal_comp.Set(choices)
+        if current in choices:
+            self.cmb_thermal_comp.SetValue(current)
+        elif self.cmb_input_comp.GetValue() in choices:
+            self.cmb_thermal_comp.SetValue(self.cmb_input_comp.GetValue())
+        elif choices:
+            self.cmb_thermal_comp.SetSelection(0)
 
     def on_type_change(self, event):
         if self.cmb_type.GetValue() == "SWITCHING":
@@ -204,6 +236,9 @@ class RegulatorDialog(wx.Dialog):
         # Set type and efficiency
         self.cmb_type.SetValue(regulator.reg_type)
         self.txt_eff.SetValue(str(regulator.efficiency))
+        self._update_thermal_components(
+            regulator.thermal_ref_des or regulator.input_ref_des
+        )
         
         # Enable/disable efficiency based on type
         if regulator.reg_type == "SWITCHING":
@@ -235,6 +270,10 @@ class RegulatorDialog(wx.Dialog):
             wx.MessageBox("Select Output Component and at least one Pad.", "Error", wx.OK | wx.ICON_ERROR)
             return
 
+        if not self.cmb_thermal_comp.GetValue():
+            wx.MessageBox("Select the component that dissipates the regulator loss.", "Error", wx.OK | wx.ICON_ERROR)
+            return
+
         if self.cmb_type.GetValue() == "SWITCHING":
             try:
                 eff = float(self.txt_eff.GetValue())
@@ -259,5 +298,6 @@ class RegulatorDialog(wx.Dialog):
             'output_ref_des': self.cmb_output_comp.GetValue(),
             'output_pads': out_pads,
             'type': self.cmb_type.GetValue(),
-            'efficiency': float(self.txt_eff.GetValue()) if self.cmb_type.GetValue() == "SWITCHING" else 1.0
+            'efficiency': float(self.txt_eff.GetValue()) if self.cmb_type.GetValue() == "SWITCHING" else 1.0,
+            'thermal_ref_des': self.cmb_thermal_comp.GetValue(),
         }
