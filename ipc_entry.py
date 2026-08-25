@@ -16,8 +16,11 @@ from ui.main_dialog import KiPIDA_MainDialog
 def main():
     # Setup logging to file for debugging
     log_file = os.path.join(tempfile.gettempdir(), 'kipida_entry.log')
-    logging.basicConfig(filename=log_file, level=logging.DEBUG, filemode='w')
+    logging.basicConfig(filename=log_file, level=logging.INFO, filemode='w')
     logger = logging.getLogger("KiPIDA")
+    logger.setLevel(logging.DEBUG)
+    logging.getLogger("matplotlib").setLevel(logging.WARNING)
+    logging.getLogger("PIL").setLevel(logging.WARNING)
     logger.info("Ki-PIDA Entry Point Started")
     
     # 1. Connect to KiCad

@@ -3,7 +3,7 @@
     "identifier": "com.github.kbralten.kipida",
     "name": "Ki-PIDA",
     "description": "DC, AC, 3D Thermal and Enclosure CFD Power Integrity Analyzer for KiCad",
-    "version": "0.8.0",
+    "version": "0.8.3",
     "kicad_version": "9.99",
     "status": "stable",
     "runtime": {

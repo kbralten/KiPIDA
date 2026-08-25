@@ -39,10 +39,16 @@ class Plotter:
                 return None
 
             for nid, (x, y, layer) in mesh.node_coords.items():
+                if has_results and nid not in mesh.results:
+                    continue
                 xs.append(x)
                 ys.append(-y)  # Invert Y to match KiCad
                 zs.append(layer_to_z.get(layer, 10 - layer * 0.5))
                 c.append(mesh.results.get(nid, 0.0) if has_results else layer)
+
+            if not xs:
+                plt.close(fig)
+                return None
                 
             sc = ax.scatter(xs, ys, zs, c=c, cmap='viridis', vmin=vmin, vmax=vmax)
             if has_results:
@@ -78,7 +84,11 @@ class Plotter:
             has_results = hasattr(mesh, 'results') and mesh.results
             
             # Filter nodes for this layer
-            nodes_on_layer = [nid for nid in mesh.nodes if mesh.node_coords[nid][2] == layer_id]
+            nodes_on_layer = [
+                nid for nid in mesh.nodes
+                if mesh.node_coords[nid][2] == layer_id
+                and (not has_results or nid in mesh.results)
+            ]
             
             if not nodes_on_layer:
                 plt.close(fig)
@@ -153,7 +163,7 @@ class Plotter:
                 print(f"Impedance plot error: {e}")
             return None
 
-    def plot_thermal_3d(self, mesh, result):
+    def plot_thermal_3d(self, mesh, result, as_png=False):
         """Render the solved volumetric temperature field."""
         try:
             nodes = list(mesh.nodes)
@@ -173,13 +183,13 @@ class Plotter:
             axis.set_zlabel('Z (mm)')
             axis.set_title('3D board temperature')
             fig.colorbar(scatter, ax=axis, label='Temperature (C)', shrink=0.75)
-            return self._fig_to_bitmap(fig)
+            return self._fig_to_png(fig) if as_png else self._fig_to_bitmap(fig)
         except Exception as e:
             if self.debug:
                 print(f"Thermal 3D plot error: {e}")
             return None
 
-    def plot_thermal_surface(self, mesh, result, side='TOP'):
+    def plot_thermal_surface(self, mesh, result, side='TOP', as_png=False):
         """Render a top or bottom board temperature map."""
         try:
             if not mesh.node_map:
@@ -198,7 +208,7 @@ class Plotter:
             axis.set_ylabel('Y (mm)')
             axis.set_title(f'{side.title()} surface temperature')
             fig.colorbar(plot, ax=axis, label='Temperature (C)')
-            return self._fig_to_bitmap(fig)
+            return self._fig_to_png(fig) if as_png else self._fig_to_bitmap(fig)
         except Exception as e:
             if self.debug:
                 print(f"Thermal surface plot error: {e}")
@@ -312,9 +322,20 @@ class Plotter:
             return None
 
     def _fig_to_bitmap(self, fig):
+        return self.bitmap_from_png(self._fig_to_png(fig))
+
+    def _fig_to_png(self, fig):
+        """Render a figure to immutable PNG bytes without touching wx."""
         buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=100)
-        plt.close(fig)
-        buf.seek(0)
+        try:
+            fig.savefig(buf, format='png', dpi=100)
+            return buf.getvalue()
+        finally:
+            plt.close(fig)
+
+    @staticmethod
+    def bitmap_from_png(png_bytes):
+        """Create wx objects on the GUI thread from background-rendered PNG."""
+        buf = io.BytesIO(png_bytes)
         image = wx.Image(buf, wx.BITMAP_TYPE_PNG)
         return wx.Bitmap(image)

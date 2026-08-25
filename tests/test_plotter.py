@@ -65,6 +65,12 @@ class TestPlotter(unittest.TestCase):
         bmp = self.plotter.plot_layer_2d(self.mesh, 99, self.stackup)
         self.assertIsNone(bmp)
 
+    def test_plot_excludes_nodes_without_valid_voltage(self):
+        self.mesh.results = {0: 3.3, 1: 3.2}
+
+        self.assertIsNotNone(self.plotter.plot_3d_mesh(self.mesh, self.stackup))
+        self.assertIsNone(self.plotter.plot_layer_2d(self.mesh, 1, self.stackup))
+
     def test_plot_impedance_sweep(self):
         baseline = SimpleNamespace(
             frequencies_hz=[1e3, 1e4, 1e5],
@@ -108,6 +114,15 @@ class TestPlotter(unittest.TestCase):
         self.assertIsNotNone(self.plotter.plot_thermal_3d(thermal_mesh, result))
         self.assertIsNotNone(self.plotter.plot_thermal_surface(thermal_mesh, result, side="TOP"))
         self.assertIsNotNone(self.plotter.plot_thermal_surface(thermal_mesh, result, side="BOTTOM"))
+
+        thermal_3d_png = self.plotter.plot_thermal_3d(thermal_mesh, result, as_png=True)
+        top_png = self.plotter.plot_thermal_surface(
+            thermal_mesh, result, side="TOP", as_png=True
+        )
+        self.assertIsInstance(thermal_3d_png, bytes)
+        self.assertIsInstance(top_png, bytes)
+        self.assertTrue(thermal_3d_png.startswith(b"\x89PNG"))
+        self.assertTrue(top_png.startswith(b"\x89PNG"))
 
     def test_plot_cfd_views(self):
         shape = (3, 3, 3)

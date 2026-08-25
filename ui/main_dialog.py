@@ -38,6 +38,10 @@ class KiPIDA_MainDialog(wx.Dialog):
         self.project = project
         self._cfd_thread = None
         self._cfd_cancel_requested = False
+        self._thermal_plot_thread = None
+        self._result_generation = 0
+        self._closing = False
+        self._plot_lock = threading.Lock()
         
         self._init_ui()
         self.Center()
@@ -430,7 +434,7 @@ class KiPIDA_MainDialog(wx.Dialog):
         rail_map = {r.net_name: r for r in system_rails}
         return [rail_map[name] for name in result]
 
-    def on_run(self, event):
+    def on_run(self, event, update_results=True):
         # 1. Collect Rails
         system_rails = self.power_tree.rails
         if not system_rails:
@@ -601,7 +605,8 @@ class KiPIDA_MainDialog(wx.Dialog):
                     self.log(f"  Solved {rail.net_name}: No result.")
 
             # --- 3. Update UI ---
-            self._update_results_ui()
+            if update_results:
+                self._update_results_ui()
             
         except Exception as e:
             self.log(f"System Solve Error: {e}")
@@ -672,6 +677,7 @@ class KiPIDA_MainDialog(wx.Dialog):
             wx.MessageBox(str(exc), "Decoupling Optimization Error", wx.OK | wx.ICON_ERROR)
 
     def _update_ac_results_ui(self, result, optimization=None):
+        self._result_generation += 1
         final_result = optimization.optimized if optimization else result
         status = "PASS" if final_result.meets_target else "TARGET NOT MET"
         lines = [
@@ -739,7 +745,10 @@ class KiPIDA_MainDialog(wx.Dialog):
         settings = self.thermal_panel.get_settings()
         if settings.include_dc_copper_losses and not getattr(self, "system_results", None):
             self.log("No current DC result; running DC analysis first.")
-            self.on_run(None)
+            # Thermal analysis only needs branch losses. Rendering every DC
+            # rail/layer here creates dozens of throwaway bitmaps and can make
+            # wx appear frozen just before thermal results are delivered.
+            self.on_run(None, update_results=False)
         if coupled and not getattr(self, "system_results", None):
             raise ValueError("Coupled analysis requires a successful DC analysis.")
 
@@ -842,13 +851,86 @@ class KiPIDA_MainDialog(wx.Dialog):
             "Model scope: steady-state 3D solid conduction with convective boundaries; "
             "this is not a volumetric CFD airflow solution.",
         ])
+        self._result_generation += 1
+        generation = self._result_generation
         self.result_text.SetValue("\n".join(lines))
-        self.results_notebook.DeleteAllPages()
-        plotter = Plotter(debug=self.chk_debug.GetValue())
-        self._add_plot_tab("Thermal 3D", plotter.plot_thermal_3d(mesh, result))
-        self._add_plot_tab("Top Surface", plotter.plot_thermal_surface(mesh, result, "TOP"))
-        self._add_plot_tab("Bottom Surface", plotter.plot_thermal_surface(mesh, result, "BOTTOM"))
+        self.results_notebook.Freeze()
+        try:
+            self.results_notebook.DeleteAllPages()
+            page = wx.Panel(self.results_notebook)
+            sizer = wx.BoxSizer(wx.VERTICAL)
+            sizer.AddStretchSpacer()
+            sizer.Add(
+                wx.StaticText(page, label="Rendering thermal plots in background..."),
+                0,
+                wx.ALIGN_CENTER | wx.ALL,
+                12,
+            )
+            sizer.AddStretchSpacer()
+            page.SetSizer(sizer)
+            self.results_notebook.AddPage(page, "Rendering")
+        finally:
+            self.results_notebook.Thaw()
         self.notebook.SetSelection(4)
+        self.log("Thermal solve complete; rendering plots in background.")
+
+        self._thermal_plot_thread = threading.Thread(
+            target=self._render_thermal_plots_worker,
+            args=(mesh, result, generation),
+            name="KiPIDA-Thermal-Plots",
+            daemon=True,
+        )
+        self._thermal_plot_thread.start()
+
+    def _render_thermal_plots_worker(self, mesh, result, generation):
+        try:
+            with self._plot_lock:
+                plotter = Plotter(debug=False)
+                plots = [
+                    ("Thermal 3D", plotter.plot_thermal_3d(mesh, result, as_png=True)),
+                    ("Top Surface", plotter.plot_thermal_surface(mesh, result, "TOP", as_png=True)),
+                    ("Bottom Surface", plotter.plot_thermal_surface(mesh, result, "BOTTOM", as_png=True)),
+                ]
+            if not self._closing:
+                wx.CallAfter(self._finish_thermal_plots, generation, plots)
+        except Exception as exc:
+            if not self._closing:
+                wx.CallAfter(self._fail_thermal_plots, generation, exc)
+
+    def _finish_thermal_plots(self, generation, plots):
+        self._thermal_plot_thread = None
+        if self._closing or generation != self._result_generation:
+            return
+        available_plots = [(title, data) for title, data in plots if data]
+        if not available_plots:
+            self._fail_thermal_plots(
+                generation,
+                RuntimeError("Matplotlib did not produce any thermal plot."),
+            )
+            return
+        self.results_notebook.Freeze()
+        try:
+            self.results_notebook.DeleteAllPages()
+            for title, png_bytes in available_plots:
+                self._add_plot_tab(title, Plotter.bitmap_from_png(png_bytes))
+        finally:
+            self.results_notebook.Thaw()
+        self.log("Thermal result plots ready.")
+
+    def _fail_thermal_plots(self, generation, exc):
+        self._thermal_plot_thread = None
+        if self._closing or generation != self._result_generation:
+            return
+        current_page = self.results_notebook.GetCurrentPage()
+        if current_page:
+            labels = [
+                child for child in current_page.GetChildren()
+                if isinstance(child, wx.StaticText)
+            ]
+            if labels:
+                labels[0].SetLabel("Thermal plot rendering failed; see Log for details.")
+                current_page.Layout()
+        self.log(f"Thermal plot rendering error: {exc}")
 
     def _prepare_cfd_analysis(self):
         """Extract all KiCad-dependent data before starting the worker thread."""
@@ -858,7 +940,7 @@ class KiPIDA_MainDialog(wx.Dialog):
         thermal_settings = self.thermal_panel.get_settings()
         if settings.include_dc_copper_losses and not getattr(self, "system_results", None):
             self.log("No current DC result; running DC analysis before enclosure CFD.")
-            self.on_run(None)
+            self.on_run(None, update_results=False)
         copper_losses = (
             self._dc_copper_loss_points()
             if settings.include_dc_copper_losses and getattr(self, "system_results", None)
@@ -951,6 +1033,7 @@ class KiPIDA_MainDialog(wx.Dialog):
             wx.MessageBox(message, "Enclosure CFD Error", wx.OK | wx.ICON_ERROR)
 
     def _update_cfd_results_ui(self, mesh, result):
+        self._result_generation += 1
         lines = [
             "Phase 4 Enclosure CFD Results",
             "=============================",
@@ -998,6 +1081,7 @@ class KiPIDA_MainDialog(wx.Dialog):
         except: pass
 
     def _update_results_ui(self):
+        self._result_generation += 1
         # Populate text stats
         txt = "System Simulation Results:\n==========================\n"
         for net, data in self.system_results.items():
@@ -1090,4 +1174,6 @@ class KiPIDA_MainDialog(wx.Dialog):
             self.btn_run_cfd.SetLabel("Cancelling CFD...")
             self.log("Close requested; cancelling enclosure CFD first.")
             return
+        self._closing = True
+        self._result_generation += 1
         self.EndModal(wx.ID_CANCEL)

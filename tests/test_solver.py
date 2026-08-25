@@ -124,5 +124,62 @@ class TestSolver(unittest.TestCase):
         self.assertAlmostEqual(result.branch_losses_w[0], 1.0, places=5)
         self.assertAlmostEqual(result.total_loss_w, 1.0, places=5)
 
+    def test_floating_island_is_excluded_from_results_and_losses(self):
+        from mesh import Mesh
+
+        messages = []
+        solver = self.solver_class(log_callback=messages.append)
+        mesh = Mesh()
+        mesh.nodes = [0, 1, 2, 3]
+        mesh.node_coords = {
+            0: (0.0, 0.0, 0),
+            1: (1.0, 0.0, 0),
+            2: (10.0, 0.0, 0),
+            3: (11.0, 0.0, 0),
+        }
+        mesh.add_edge_direct(0, 1, g=1.0)
+        mesh.add_edge_direct(2, 3, g=1.0)
+
+        result = solver.solve_detailed(
+            mesh,
+            sources=[{"node_id": 0, "voltage": 5.0}],
+            loads=[{"node_id": 1, "current": 1.0}],
+        )
+
+        self.assertEqual(set(result.voltages), {0, 1})
+        self.assertAlmostEqual(result.voltages[1], 4.0, places=5)
+        self.assertAlmostEqual(result.branch_currents_a[0], 1.0, places=5)
+        self.assertAlmostEqual(result.branch_currents_a[1], 0.0, places=5)
+        self.assertAlmostEqual(result.total_loss_w, 1.0, places=5)
+        self.assertTrue(any("Ignoring floating island" in message for message in messages))
+
+    def test_load_on_source_free_island_is_reported_and_excluded(self):
+        from mesh import Mesh
+
+        messages = []
+        solver = self.solver_class(log_callback=messages.append)
+        mesh = Mesh()
+        mesh.nodes = [0, 1, 2, 3]
+        mesh.node_coords = {
+            0: (0.0, 0.0, 0),
+            1: (1.0, 0.0, 0),
+            2: (10.0, 0.0, 0),
+            3: (11.0, 0.0, 0),
+        }
+        mesh.add_edge_direct(0, 1, g=1.0)
+        mesh.add_edge_direct(2, 3, g=1.0)
+
+        result = solver.solve(
+            mesh,
+            sources=[{"node_id": 0, "voltage": 5.0}],
+            loads=[
+                {"node_id": 1, "current": 1.0},
+                {"node_id": 3, "current": 0.5},
+            ],
+        )
+
+        self.assertEqual(set(result), {0, 1})
+        self.assertTrue(any("ERROR:" in message and "load node" in message for message in messages))
+
 if __name__ == '__main__':
     unittest.main()

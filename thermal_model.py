@@ -57,6 +57,20 @@ class ThermalBoardModel:
 class PowerLossEstimator:
     """Estimate component heat from the existing power-tree semantics."""
 
+    LOAD_THERMAL_MODES = {"AUTO", "LOCAL", "EXTERNAL"}
+
+    @classmethod
+    def _load_dissipates_locally(cls, load):
+        mode = str(getattr(load, "thermal_mode", "AUTO") or "AUTO").upper()
+        if mode not in cls.LOAD_THERMAL_MODES:
+            mode = "AUTO"
+        if mode == "LOCAL":
+            return True
+        if mode == "EXTERNAL":
+            return False
+        ref_des = str(load.component_ref.ref_des or "").strip().upper()
+        return not ref_des.startswith("J")
+
     @staticmethod
     def estimate(rails: List[PowerRail]) -> List[ThermalComponentModel]:
         rail_by_name = {rail.net_name: rail for rail in rails}
@@ -67,10 +81,16 @@ class PowerLossEstimator:
             voltage = max(0.0, float(rail.nominal_voltage))
             for load in rail.loads:
                 ref_des = load.component_ref.ref_des
-                component_power[ref_des] = component_power.get(ref_des, 0.0) + voltage * max(
-                    0.0, float(load.total_current)
-                )
-                model_source[ref_des] = "power-tree-load"
+                if PowerLossEstimator._load_dissipates_locally(load):
+                    component_power[ref_des] = component_power.get(ref_des, 0.0) + voltage * max(
+                        0.0, float(load.total_current)
+                    )
+                    model_source[ref_des] = "power-tree-load"
+                else:
+                    # Keep a visible zero-watt row in the Thermal GUI. The
+                    # current still participates in upstream regulator losses.
+                    component_power.setdefault(ref_des, 0.0)
+                    model_source.setdefault(ref_des, "power-tree-external-load")
 
         memo = {}
         visiting = set()
@@ -99,7 +119,11 @@ class PowerLossEstimator:
                 else:
                     loss = max(0.0, input_voltage - output_voltage) * output_current
                     input_current = output_current
-                ref_des = regulator.output_ref_des or regulator.input_ref_des
+                ref_des = (
+                    getattr(regulator, "thermal_ref_des", "")
+                    or regulator.input_ref_des
+                    or regulator.output_ref_des
+                )
                 if ref_des:
                     component_power[ref_des] = component_power.get(ref_des, 0.0) + loss
                     model_source[ref_des] = "regulator-loss"
@@ -115,7 +139,9 @@ class PowerLossEstimator:
             ref_des=ref_des,
             power_w=power,
             model_source=model_source.get(ref_des, "estimated"),
-        ) for ref_des, power in sorted(component_power.items()) if power > 0]
+        ) for ref_des, power in sorted(component_power.items()) if (
+            power > 0 or model_source.get(ref_des) == "power-tree-external-load"
+        )]
 
 
 class ThermalModelBuilder:

@@ -54,7 +54,8 @@ class TestConfigManager(unittest.TestCase):
             component_ref=ComponentRef(ref_des="U1"),
             total_current=1.5,
             pad_names=["VDD"],
-            distribution_mode="UNIFORM"
+            distribution_mode="UNIFORM",
+            thermal_mode="LOCAL",
         ))
         
         # Add regulator from 12V to 5V
@@ -67,7 +68,8 @@ class TestConfigManager(unittest.TestCase):
             output_ref_des="U2",
             output_pad_names=["VOUT"],
             reg_type="SWITCHING",
-            efficiency=0.90
+            efficiency=0.90,
+            thermal_ref_des="U2",
         ))
         
         # Add regulator from 5V to 3V3
@@ -100,7 +102,7 @@ class TestConfigManager(unittest.TestCase):
             with open(filepath, 'r') as f:
                 data = json.load(f)
             
-            self.assertEqual(data["version"], "1.3")
+            self.assertEqual(data["version"], "1.4")
             self.assertEqual(len(data["rails"]), 3)
             
             # Verify 12V rail
@@ -120,6 +122,10 @@ class TestConfigManager(unittest.TestCase):
             self.assertEqual(reg["name"], "Buck1")
             self.assertEqual(reg["reg_type"], "SWITCHING")
             self.assertEqual(reg["efficiency"], 0.90)
+            self.assertEqual(reg["thermal_ref_des"], "U2")
+
+            load = data["rails"][1]["loads"][0]
+            self.assertEqual(load["thermal_mode"], "LOCAL")
             
         finally:
             if Path(filepath).exists():
@@ -156,6 +162,7 @@ class TestConfigManager(unittest.TestCase):
             self.assertEqual(load.component_ref.ref_des, "U1")
             self.assertEqual(load.total_current, 1.5)
             self.assertEqual(load.pad_names, ["VDD"])
+            self.assertEqual(load.thermal_mode, "LOCAL")
             
             # Verify regulator
             reg = rail_12v.child_regulators[0]
@@ -164,6 +171,7 @@ class TestConfigManager(unittest.TestCase):
             self.assertEqual(reg.output_rail_name, "5V")
             self.assertEqual(reg.reg_type, "SWITCHING")
             self.assertEqual(reg.efficiency, 0.90)
+            self.assertEqual(reg.thermal_ref_des, "U2")
             
         finally:
             if Path(filepath).exists():
@@ -300,6 +308,9 @@ class TestConfigManager(unittest.TestCase):
             if Path(filepath).exists():
                 os.unlink(filepath)
 
+    def test_thermal_default_allows_relaxed_coupled_convergence(self):
+        self.assertEqual(ThermalAnalysisSettings().coupled_iterations, 10)
+
     def test_legacy_v11_config_migrates_without_thermal_profile(self):
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
             filepath = f.name
@@ -363,6 +374,46 @@ class TestConfigManager(unittest.TestCase):
         try:
             project = load_project_config(filepath)
             self.assertIsNone(project.cfd_profile)
+        finally:
+            if Path(filepath).exists():
+                os.unlink(filepath)
+
+    def test_legacy_v13_power_tree_uses_safe_thermal_defaults(self):
+        """Existing configs gain safe semantics without manual migration."""
+        legacy = {
+            "version": "1.3",
+            "rails": [{
+                "net_name": "5V",
+                "nominal_voltage": 5.0,
+                "sources": [],
+                "loads": [{
+                    "ref_des": "J6",
+                    "total_current": 2.0,
+                    "pad_names": ["1"],
+                    "distribution_mode": "UNIFORM",
+                }],
+                "child_regulators": [{
+                    "name": "Buck",
+                    "input_rail_name": "12V",
+                    "input_ref_des": "U4",
+                    "input_pad_names": ["VIN"],
+                    "output_rail_name": "5V",
+                    "output_ref_des": "L1",
+                    "output_pad_names": ["1"],
+                    "reg_type": "SWITCHING",
+                    "efficiency": 0.9,
+                }],
+            }],
+        }
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as f:
+            json.dump(legacy, f)
+            filepath = f.name
+        try:
+            project = load_project_config(filepath)
+            load = project.rails[0].loads[0]
+            regulator = project.rails[0].child_regulators[0]
+            self.assertEqual(load.thermal_mode, "AUTO")
+            self.assertEqual(regulator.thermal_ref_des, "")
         finally:
             if Path(filepath).exists():
                 os.unlink(filepath)
