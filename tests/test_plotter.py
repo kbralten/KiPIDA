@@ -109,6 +109,15 @@ class TestPlotter(unittest.TestCase):
         self.assertIsNotNone(self.plotter.plot_thermal_surface(thermal_mesh, result, side="TOP"))
         self.assertIsNotNone(self.plotter.plot_thermal_surface(thermal_mesh, result, side="BOTTOM"))
 
+        thermal_3d_png = self.plotter.plot_thermal_3d(thermal_mesh, result, as_png=True)
+        top_png = self.plotter.plot_thermal_surface(
+            thermal_mesh, result, side="TOP", as_png=True
+        )
+        self.assertIsInstance(thermal_3d_png, bytes)
+        self.assertIsInstance(top_png, bytes)
+        self.assertTrue(thermal_3d_png.startswith(b"\x89PNG"))
+        self.assertTrue(top_png.startswith(b"\x89PNG"))
+
     def test_plot_cfd_views(self):
         shape = (3, 3, 3)
         count = 27

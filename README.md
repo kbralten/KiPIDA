@@ -129,7 +129,7 @@ The optimizer is intentionally non-destructive: it reports footprint/value recom
 4. For each regulator, select the **Thermal loss component** independently from its connectivity endpoints. By default, conversion loss is placed on the input component, avoiding accidental placement on an output inductor.
 5. Choose **Refresh Power Estimates**. Regulator dissipation uses LDO voltage drop or switching efficiency. External loads remain visible as zero-watt rows so they can be reviewed or overridden. Double-click any component to enter a reviewed power and compact package thermal model.
 6. Choose **Run Thermal** for a single steady-state solve. Enable **Include DC copper losses** to reuse losses from the DC branch solution.
-7. Choose **Run Coupled** to iterate copper resistance, DC branch loss, and board temperature. Review the hotspot, energy balance, component junction estimates, and 3D/top/bottom plots in **Results**.
+7. Choose **Run Coupled** to iterate copper resistance, DC branch loss, and board temperature. Review the hotspot, energy balance, component junction estimates, and 3D/top/bottom plots in **Results**. The textual report is published immediately; the plots are rendered in the background so the KiCad interface remains responsive.
 8. Save the project configuration to persist the thermal profile in `<project>.kipida.json`.
 
 The airflow model applies convective boundary conditions to the 3D solid board mesh. It is intended for board-level design comparison and hotspot screening; it is not a volumetric CFD enclosure or fan model. Component junction temperatures use the configured compact `theta-JB` estimate and therefore require engineering review before sign-off.

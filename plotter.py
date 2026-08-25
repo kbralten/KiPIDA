@@ -153,7 +153,7 @@ class Plotter:
                 print(f"Impedance plot error: {e}")
             return None
 
-    def plot_thermal_3d(self, mesh, result):
+    def plot_thermal_3d(self, mesh, result, as_png=False):
         """Render the solved volumetric temperature field."""
         try:
             nodes = list(mesh.nodes)
@@ -173,13 +173,13 @@ class Plotter:
             axis.set_zlabel('Z (mm)')
             axis.set_title('3D board temperature')
             fig.colorbar(scatter, ax=axis, label='Temperature (C)', shrink=0.75)
-            return self._fig_to_bitmap(fig)
+            return self._fig_to_png(fig) if as_png else self._fig_to_bitmap(fig)
         except Exception as e:
             if self.debug:
                 print(f"Thermal 3D plot error: {e}")
             return None
 
-    def plot_thermal_surface(self, mesh, result, side='TOP'):
+    def plot_thermal_surface(self, mesh, result, side='TOP', as_png=False):
         """Render a top or bottom board temperature map."""
         try:
             if not mesh.node_map:
@@ -198,7 +198,7 @@ class Plotter:
             axis.set_ylabel('Y (mm)')
             axis.set_title(f'{side.title()} surface temperature')
             fig.colorbar(plot, ax=axis, label='Temperature (C)')
-            return self._fig_to_bitmap(fig)
+            return self._fig_to_png(fig) if as_png else self._fig_to_bitmap(fig)
         except Exception as e:
             if self.debug:
                 print(f"Thermal surface plot error: {e}")
@@ -312,9 +312,20 @@ class Plotter:
             return None
 
     def _fig_to_bitmap(self, fig):
+        return self.bitmap_from_png(self._fig_to_png(fig))
+
+    def _fig_to_png(self, fig):
+        """Render a figure to immutable PNG bytes without touching wx."""
         buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=100)
-        plt.close(fig)
-        buf.seek(0)
+        try:
+            fig.savefig(buf, format='png', dpi=100)
+            return buf.getvalue()
+        finally:
+            plt.close(fig)
+
+    @staticmethod
+    def bitmap_from_png(png_bytes):
+        """Create wx objects on the GUI thread from background-rendered PNG."""
+        buf = io.BytesIO(png_bytes)
         image = wx.Image(buf, wx.BITMAP_TYPE_PNG)
         return wx.Bitmap(image)
