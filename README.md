@@ -1,6 +1,6 @@
 # Ki-PIDA (KiCad Power Integrity & Delivery Analyzer)
 
-Ki-PIDA is a native KiCad plugin designed for Direct Current (DC) Power Integrity (PI) analysis. It allows PCB designers to simulate voltage drops (IR drop), current densities, and thermal rise directly within the KiCad Pcbnew environment, eliminating the need for expensive proprietary tools or complex external workflows.
+Ki-PIDA is a native KiCad plugin for DC and AC Power Integrity (PI) analysis. It allows PCB designers to simulate voltage drops (IR drop), current densities, thermal rise, and rail-to-ground impedance directly within the KiCad Pcbnew environment, eliminating complex external workflows.
 
 ## 🚀 Why Ki-PIDA?
 
@@ -20,6 +20,8 @@ Ki-PIDA democratizes high-end PI analysis by:
 - **Multi-Rail Analysis:** Simulate complex power trees with nested regulators (Buck, LDO) and enforce correct dependency solving.
 - **Project Persistence:** Automatically saves your power tree configuration (sources, loads, regulators) in the project directory, so you don't lose your setup.
 - **Visual Feedback:** Interactive heatmaps for voltage and current density, with dedicated tabs for each power rail in the system.
+- **AC Impedance:** Sweep rail-to-ground impedance magnitude and phase over a logarithmic frequency range.
+- **Decoupling Optimization:** Rank values for existing unpopulated/DNP capacitor footprints against a target-impedance envelope.
 
 ## 📦 Installation
 
@@ -97,6 +99,17 @@ Once "Simulation Success" appears, the UI will jump to the **Results** tab.
 > [!TIP]
 > Use the **Enable Debug Log** checkbox if you encounter issues during meshing or solving to see more detail in the Log tab.
 
+## Tutorial: AC Impedance and Decoupling Optimization
+
+1. Define the rail's sources and loads in **Power Tree & Config**, then open **AC Impedance**.
+2. Select the power rail, return net, source component, and measurement component. Regulator outputs that feed the selected rail are offered as source components.
+3. Set the logarithmic sweep range, point count, target impedance, and the source's small-signal resistance/inductance.
+4. Review the detected rail-to-ground capacitors. Ki-PIDA reads common KiCad values such as `100n`, `4u7`, and `10uF`; package-derived ESR/ESL values remain engineering estimates.
+5. Choose **Run AC Analysis** to plot impedance magnitude and phase, or **Optimize Decoupling** to evaluate the detected disabled/DNP capacitor footprints.
+6. Save the project configuration to persist the AC profile in `<project>.kipida.json` beside the `.kicad_pro` file.
+
+The optimizer is intentionally non-destructive: it reports footprint/value recommendations but does not modify the PCB or schematic. It only uses candidate capacitor locations already present on the board.
+
 ## 🛠️ Technical Overview (For Developers)
 
 Ki-PIDA is built on a modular architecture designed for performance and maintainability.
@@ -105,10 +118,13 @@ Ki-PIDA is built on a modular architecture designed for performance and maintain
 - **Extractor (`extractor.py`):** Interfaces with the KiCad API to pull filled zone geometry, track layouts, and physical stackup data.
 - **Mesher (`mesh.py`):** Discretizes continuous copper geometry into a 2D/3D resistive grid (Rasterization).
 - **Solver (`solver.py`):** Uses an Admittance Matrix (Stamps method) and optimized SciPy sparse solvers (SuperLU/CG) to solve the electrical system.
+- **AC Model (`ac_model.py`):** Builds coupled rail/return meshes and maps sources, measurement ports, and rail-to-ground capacitors.
+- **AC Solver (`ac_solver.py`):** Stamps frequency-dependent sparse complex admittance matrices for copper/via RL branches and capacitor RLC models.
+- **Decoupling Optimizer (`decoupling_optimizer.py`):** Deterministically searches existing candidate footprints against the target-impedance score.
 - **Visualizer (`visualizer.py`):** Generates heatmaps via Matplotlib and renders them as overlays in KiCad.
 
 ### Methodology
-The tool utilizes a **Hybrid 2.5D Finite Difference Method (FDM)**. It represents PCB layers as 2D grids of resistors connected vertically by via/PTH resistor elements. This provides the ideal balance between the speed of a 2D solver and the accuracy of a full 3D FEM for planar PCB structures.
+The tool utilizes a **Hybrid 2.5D Finite Difference Method (FDM)**. It represents PCB layers as 2D grids connected vertically by via/PTH elements. DC analysis uses resistive branches; AC analysis retains the same topology and adds stackup-sensitive branch inductance plus lumped source/capacitor RLC models. This is a quasi-static engineering model, not a full-wave 3D electromagnetic solver.
 
 ### Stack
 - **Languages:** Python 3.9+
@@ -118,13 +134,15 @@ The tool utilizes a **Hybrid 2.5D Finite Difference Method (FDM)**. It represent
 
 ## � Current State (Alpha)
 
-As of the current version, Ki-PIDA implements a functional end-to-end pipeline for DC IR drop analysis.
+As of the current version, Ki-PIDA implements end-to-end DC IR drop and AC target-impedance analysis.
 
 ### Capabilities:
 - **Comprehensive Extraction:** Extracts tracks, pads, and filled zones (respecting thermal reliefs and voids) from KiCad 9.0+ boards.
 - **3D Meshing Engine:** Converts geometry into a resistive mesh across multiple layers, correctly modeling via and PTH conductances.
 - **Robust Linear Solver:** Solves the circuit using SciPy's sparse matrix backend. Includes island detection to warn about floating sections of copper that could cause numerical issues.
 - **Automated Diagnostics:** Detects isolated copper nodes and disjoint electrical islands during the solve phase.
+- **Target-Impedance Sweep:** Reports worst-case impedance/frequency and PASS/FAIL against the configured envelope.
+- **Deterministic Decoupling Search:** Recommends values for existing DNP/candidate footprints without editing the board.
 
 ### User Experience:
 - **Automated Rail Discovery:** Instantly find power nets based on zone connectivity.
@@ -133,6 +151,6 @@ As of the current version, Ki-PIDA implements a functional end-to-end pipeline f
 
 ## �🗺️ Roadmap
 
-- **Phase 1 (Current):** DC IR Drop, basic thermal checks, and power tree UI.
-- **Phase 2:** AC Impedance Analysis ($Z$ vs Frequency) and decoupling capacitor optimization.
+- **Phase 1:** DC IR Drop, basic thermal checks, and power tree UI.
+- **Phase 2 (Current):** AC Impedance Analysis ($Z$ vs Frequency) and decoupling capacitor optimization.
 - **Phase 3:** Full 3D Thermal modeling with airflow convection.

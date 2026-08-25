@@ -122,6 +122,37 @@ class Plotter:
             if self.debug: print(f"Plotter 2D Error: {e}")
             return None
 
+    def plot_impedance_sweep(self, baseline, optimized=None):
+        """Plot rail impedance magnitude and phase over frequency."""
+        try:
+            fig, (ax_mag, ax_phase) = plt.subplots(2, 1, figsize=(8, 6), sharex=True, constrained_layout=True)
+            frequencies = np.asarray(baseline.frequencies_hz)
+            impedance = np.asarray(baseline.impedance_ohm, dtype=complex)
+            ax_mag.loglog(frequencies, np.abs(impedance), label="Baseline", linewidth=2)
+            ax_phase.semilogx(frequencies, np.angle(impedance, deg=True), label="Baseline", linewidth=2)
+
+            if optimized is not None:
+                optimized_impedance = np.asarray(optimized.impedance_ohm, dtype=complex)
+                ax_mag.loglog(frequencies, np.abs(optimized_impedance), label="Optimized", linewidth=2)
+                ax_phase.semilogx(frequencies, np.angle(optimized_impedance, deg=True), label="Optimized", linewidth=2)
+
+            target = baseline.target_impedance_ohm
+            if target > 0:
+                ax_mag.axhline(target, color="red", linestyle="--", label=f"Target ({target:g} ohm)")
+
+            ax_mag.set_ylabel("|Z| (ohm)")
+            ax_mag.set_title("Rail-to-ground impedance")
+            ax_mag.grid(True, which="both", alpha=0.3)
+            ax_mag.legend()
+            ax_phase.set_xlabel("Frequency (Hz)")
+            ax_phase.set_ylabel("Phase (deg)")
+            ax_phase.grid(True, which="both", alpha=0.3)
+            return self._fig_to_bitmap(fig)
+        except Exception as e:
+            if self.debug:
+                print(f"Impedance plot error: {e}")
+            return None
+
     def _fig_to_bitmap(self, fig):
         buf = io.BytesIO()
         fig.savefig(buf, format='png', dpi=100)

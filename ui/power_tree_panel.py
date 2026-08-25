@@ -6,14 +6,14 @@ try:
     from ui.component_selector import ComponentSelectorDialog
     from ui.regulator_dialog import RegulatorDialog
     from discovery import NetDiscoverer
-    from config_manager import save_config, load_config
+    from config_manager import get_project_config_path, load_project_config, save_config
 except (ImportError, ValueError):
     # Fallback or just re-raise if absolute fails (shouldn't happen with sys.path set)
     from models import PowerRail, UnifiedSource, UnifiedLoad, ComponentRef, VoltageRegulator
     from ui.component_selector import ComponentSelectorDialog
     from ui.regulator_dialog import RegulatorDialog
     from discovery import NetDiscoverer
-    from config_manager import save_config, load_config
+    from config_manager import get_project_config_path, load_project_config, save_config
 
 class NetSelectionDialog(wx.Dialog):
     def __init__(self, parent, nets):
@@ -45,6 +45,8 @@ class PowerTreePanel(wx.Panel):
         # Data
         self.rails = [] # List of PowerRail objects
         self.active_rail = None
+        self.ac_profiles_provider = None
+        self.ac_profiles_consumer = None
         
         self._init_ui()
 
@@ -151,7 +153,10 @@ class PowerTreePanel(wx.Panel):
         config_path = self._get_config_path()
         if config_path and config_path.exists():
             try:
-                self.rails = load_config(str(config_path))
+                project_config = load_project_config(str(config_path))
+                self.rails = project_config.rails
+                if self.ac_profiles_consumer:
+                    self.ac_profiles_consumer(project_config.ac_profiles)
                 self.log(f"Loaded configuration from {config_path.name} ({len(self.rails)} rails)")
             except Exception as e:
                 self.log(f"Failed to load config: {e}. Running auto-scan instead.")
@@ -599,11 +604,11 @@ class PowerTreePanel(wx.Panel):
             from pathlib import Path
             
             # Use project object if available (IPC API)
-            if self.project and hasattr(self.project, 'path') and hasattr(self.project, 'name'):
-                project_path = Path(self.project.path)
-                config_filename = f"{self.project.name}.kipida.json"
-                config_path = project_path / config_filename
-                return config_path
+            if self.project and hasattr(self.project, 'path'):
+                return get_project_config_path(
+                    self.project.path,
+                    getattr(self.project, 'name', None),
+                )
             
             # Fallback: try to get from board (legacy)
             if hasattr(self.board, 'filename'):
@@ -617,7 +622,7 @@ class PowerTreePanel(wx.Panel):
             if not project_file:
                 return None
             
-            # Convert to Path and get directory + stem
+            # Board filenames are stored beside the generated configuration.
             project_path = Path(project_file)
             config_filename = f"{project_path.stem}.kipida.json"
             config_path = project_path.parent / config_filename
@@ -634,7 +639,8 @@ class PowerTreePanel(wx.Panel):
             return
         
         try:
-            save_config(self.rails, str(config_path))
+            ac_profiles = self.ac_profiles_provider() if self.ac_profiles_provider else {}
+            save_config(self.rails, str(config_path), ac_profiles=ac_profiles)
             self.log(f"Configuration saved to {config_path.name}")
             wx.MessageBox(f"Configuration saved successfully to:\n{config_path}", "Success", wx.OK | wx.ICON_INFORMATION)
         except Exception as e:
@@ -653,7 +659,10 @@ class PowerTreePanel(wx.Panel):
             return
         
         try:
-            self.rails = load_config(str(config_path))
+            project_config = load_project_config(str(config_path))
+            self.rails = project_config.rails
+            if self.ac_profiles_consumer:
+                self.ac_profiles_consumer(project_config.ac_profiles)
             self.log(f"Loaded configuration from {config_path.name} ({len(self.rails)} rails)")
             
             # Refresh UI

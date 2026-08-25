@@ -11,7 +11,10 @@ if plugin_dir not in sys.path:
 from extractor import GeometryExtractor
 from mesh import Mesher
 from solver import Solver
-from solver import Solver
+from ac_model import ACModelBuilder, format_capacitance
+from ac_solver import ACSolver
+from decoupling_optimizer import DecouplingOptimizer
+from ui.ac_analysis_panel import ACAnalysisPanel
 from ui.power_tree_panel import PowerTreePanel
 from plotter import Plotter
 
@@ -88,12 +91,27 @@ class KiPIDA_MainDialog(wx.Dialog):
         
         self.notebook.AddPage(self.tab_config, "Power Tree & Config")
         
-        # Tab 2: Results
+        # Tab 2: AC Impedance Configuration
+        self.tab_ac = wx.Panel(self.notebook)
+        ac_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.ac_panel = ACAnalysisPanel(
+            self.tab_ac,
+            self.board,
+            rails_provider=lambda: self.power_tree.rails,
+            log_callback=self.log,
+        )
+        ac_sizer.Add(self.ac_panel, 1, wx.EXPAND | wx.ALL, 5)
+        self.tab_ac.SetSizer(ac_sizer)
+        self.notebook.AddPage(self.tab_ac, "AC Impedance")
+        self.power_tree.ac_profiles_provider = self.ac_panel.get_profiles
+        self.power_tree.ac_profiles_consumer = self.ac_panel.set_profiles
+
+        # Tab 3: Results
         self.tab_results = wx.Panel(self.notebook)
         self._init_results_tab(self.tab_results)
         self.notebook.AddPage(self.tab_results, "Results")
         
-        # Tab 3: Log/Debug
+        # Tab 4: Log/Debug
         self.tab_log = wx.Panel(self.notebook)
         self._init_log_tab(self.tab_log)
         self.notebook.AddPage(self.tab_log, "Log")
@@ -103,11 +121,15 @@ class KiPIDA_MainDialog(wx.Dialog):
         # 2. Action Buttons (Bottom)
         btn_sizer = wx.BoxSizer(wx.HORIZONTAL)
         
-        self.btn_run = wx.Button(self, label="Run Simulation")
+        self.btn_run = wx.Button(self, label="Run DC Simulation")
+        self.btn_run_ac = wx.Button(self, label="Run AC Analysis")
+        self.btn_optimize = wx.Button(self, label="Optimize Decoupling")
         self.btn_cancel = wx.Button(self, wx.ID_CANCEL, "Close")
         
         btn_sizer.AddStretchSpacer()
         btn_sizer.Add(self.btn_run, 0, wx.ALL, 5)
+        btn_sizer.Add(self.btn_run_ac, 0, wx.ALL, 5)
+        btn_sizer.Add(self.btn_optimize, 0, wx.ALL, 5)
         btn_sizer.Add(self.btn_cancel, 0, wx.ALL, 5)
         
         main_sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 5)
@@ -116,10 +138,18 @@ class KiPIDA_MainDialog(wx.Dialog):
         
         # Bind events
         self.btn_run.Bind(wx.EVT_BUTTON, self.on_run)
+        self.btn_run_ac.Bind(wx.EVT_BUTTON, self.on_run_ac)
+        self.btn_optimize.Bind(wx.EVT_BUTTON, self.on_optimize_decoupling)
         self.btn_cancel.Bind(wx.EVT_BUTTON, self.on_close)
+        self.notebook.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.on_notebook_page_changed)
         
         # Auto-scan board after UI is ready
         wx.CallAfter(self.power_tree.auto_scan)
+
+    def on_notebook_page_changed(self, event):
+        if event.GetSelection() == 1:
+            wx.CallAfter(self.ac_panel.refresh)
+        event.Skip()
     
     def _init_results_tab(self, parent):
         sizer = wx.BoxSizer(wx.VERTICAL)
@@ -360,7 +390,7 @@ class KiPIDA_MainDialog(wx.Dialog):
              wx.MessageBox("No power rails defined.")
              return
              
-        self.notebook.SetSelection(2) # Switch to Log
+        self.notebook.SetSelection(3) # Switch to Log
         self.log(f"--- Starting System Simulation ({len(system_rails)} rails) ---")
         
         try:
@@ -539,9 +569,108 @@ class KiPIDA_MainDialog(wx.Dialog):
             self._update_results_ui()
             
         except Exception as e:
-             self.log(f"System Solve Error: {e}")
-             import traceback
-             traceback.print_exc()
+            self.log(f"System Solve Error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _prepare_ac_analysis(self):
+        if self.ac_panel.choice_rail.GetCount() == 0:
+            self.ac_panel.refresh(force_discovery=True)
+        settings = self.ac_panel.get_settings()
+        if settings is None:
+            raise ValueError("Select a power rail for AC analysis.")
+
+        rail = next((item for item in self.power_tree.rails if item.net_name == settings.rail_name), None)
+        if rail is None:
+            raise ValueError(f"Power rail '{settings.rail_name}' is not available.")
+        if not settings.source.ref_des:
+            raise ValueError("Select a source component in the AC Impedance tab.")
+        if not settings.measurement_port.ref_des:
+            raise ValueError("Select a measurement component in the AC Impedance tab.")
+
+        try:
+            grid_size = max(0.01, float(self.txt_grid_size.GetValue()))
+        except ValueError:
+            grid_size = 0.1
+        debug_mode = self.chk_debug.GetValue()
+        builder = ACModelBuilder(self.board, debug=debug_mode, log_callback=self.log)
+        network = builder.build(rail, settings, grid_size_mm=grid_size)
+        return settings, network
+
+    def _ac_progress(self, completed, total, detail):
+        interval = max(1, total // 10)
+        if completed == total or completed % interval == 0:
+            self.log(f"AC progress: {completed}/{total} ({detail})")
+            wx.SafeYield()
+
+    def on_run_ac(self, event):
+        self.notebook.SetSelection(3)
+        self.log("--- Starting AC Impedance Analysis ---")
+        try:
+            settings, network = self._prepare_ac_analysis()
+            solver = ACSolver(debug=self.chk_debug.GetValue(), log_callback=self.log)
+            result = solver.solve_sweep(network, settings, progress_callback=self._ac_progress)
+            self.ac_result = result
+            self.ac_optimization_result = None
+            self._update_ac_results_ui(result)
+        except Exception as exc:
+            self.log(f"AC Analysis Error: {exc}")
+            wx.MessageBox(str(exc), "AC Analysis Error", wx.OK | wx.ICON_ERROR)
+
+    def on_optimize_decoupling(self, event):
+        self.notebook.SetSelection(3)
+        self.log("--- Starting Decoupling Optimization ---")
+        try:
+            settings, network = self._prepare_ac_analysis()
+            solver = ACSolver(debug=self.chk_debug.GetValue(), log_callback=self.log)
+            optimizer = DecouplingOptimizer(
+                solver,
+                debug=self.chk_debug.GetValue(),
+                log_callback=self.log,
+            )
+            optimization = optimizer.optimize(network, settings, progress_callback=self._ac_progress)
+            self.ac_result = optimization.optimized
+            self.ac_optimization_result = optimization
+            self._update_ac_results_ui(optimization.baseline, optimization)
+        except Exception as exc:
+            self.log(f"Decoupling Optimization Error: {exc}")
+            wx.MessageBox(str(exc), "Decoupling Optimization Error", wx.OK | wx.ICON_ERROR)
+
+    def _update_ac_results_ui(self, result, optimization=None):
+        final_result = optimization.optimized if optimization else result
+        status = "PASS" if final_result.meets_target else "TARGET NOT MET"
+        lines = [
+            "AC Impedance Analysis Results",
+            "=============================",
+            f"Status: {status}",
+            f"Worst |Z|: {final_result.worst_impedance_ohm:.6g} ohm",
+            f"Worst frequency: {final_result.worst_frequency_hz:.6g} Hz",
+            f"Target: {final_result.target_impedance_ohm:.6g} ohm",
+        ]
+        if optimization:
+            lines.extend(["", "Decoupling recommendations:"])
+            if optimization.recommendations:
+                for recommendation in optimization.recommendations:
+                    lines.append(
+                        f"  - {recommendation.action} {recommendation.ref_des}: "
+                        f"{format_capacitance(recommendation.capacitance_f)}"
+                    )
+            else:
+                lines.append("  - No capacitor changes recommended.")
+        lines.extend([
+            "",
+            "Model note: ESR/ESL and distributed inductance may be estimates; review before sign-off.",
+        ])
+        self.result_text.SetValue("\n".join(lines))
+
+        self.results_notebook.DeleteAllPages()
+        plotter = Plotter(debug=self.chk_debug.GetValue())
+        bitmap = plotter.plot_impedance_sweep(
+            result,
+            optimization.optimized if optimization else None,
+        )
+        self._add_plot_tab("AC Impedance", bitmap)
+        self.notebook.SetSelection(2)
 
     def _debug_plot_geo(self, extractor, geo):
         try:
@@ -645,7 +774,7 @@ class KiPIDA_MainDialog(wx.Dialog):
             self.results_notebook.AddPage(rail_notebook, rail_name)
         
         # Switch to Results tab
-        self.notebook.SetSelection(1)
+        self.notebook.SetSelection(2)
 
     def on_close(self, event):
         self.EndModal(wx.ID_CANCEL)

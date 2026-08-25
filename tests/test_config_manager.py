@@ -9,10 +9,29 @@ plugin_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if plugin_dir not in sys.path:
     sys.path.insert(0, plugin_dir)
 
-from config_manager import save_config, load_config
-from models import PowerRail, UnifiedSource, UnifiedLoad, VoltageRegulator, ComponentRef
+from config_manager import get_project_config_path, save_config, load_config, load_project_config
+from models import (
+    ACAnalysisSettings, ACMeasurementPort, ACSourceModel, CapacitorModel,
+    PowerRail, UnifiedSource, UnifiedLoad, VoltageRegulator, ComponentRef,
+)
 
 class TestConfigManager(unittest.TestCase):
+
+    def test_kicad_10_project_file_config_path(self):
+        project_file = Path(r"C:\projects\p02_alimentation\p02_alimentation.kicad_pro")
+
+        self.assertEqual(
+            get_project_config_path(project_file, "p02_alimentation"),
+            Path(r"C:\projects\p02_alimentation\p02_alimentation.kipida.json"),
+        )
+
+    def test_project_directory_config_path(self):
+        project_dir = Path(r"C:\projects\p02_alimentation")
+
+        self.assertEqual(
+            get_project_config_path(project_dir, "p02_alimentation"),
+            project_dir / "p02_alimentation.kipida.json",
+        )
     
     def setUp(self):
         """Create sample power network configuration."""
@@ -78,7 +97,7 @@ class TestConfigManager(unittest.TestCase):
             with open(filepath, 'r') as f:
                 data = json.load(f)
             
-            self.assertEqual(data["version"], "1.0")
+            self.assertEqual(data["version"], "1.1")
             self.assertEqual(len(data["rails"]), 3)
             
             # Verify 12V rail
@@ -185,6 +204,60 @@ class TestConfigManager(unittest.TestCase):
             save_config([], filepath)
             loaded_rails = load_config(filepath)
             self.assertEqual(len(loaded_rails), 0)
+        finally:
+            if Path(filepath).exists():
+                os.unlink(filepath)
+
+    def test_ac_profile_round_trip(self):
+        """AC settings are stored beside the existing power-tree configuration."""
+        profile = ACAnalysisSettings(
+            rail_name="5V",
+            ground_net_name="GND",
+            frequency_start_hz=100.0,
+            frequency_stop_hz=20e6,
+            frequency_points=77,
+            target_impedance_ohm=0.025,
+            source=ACSourceModel(
+                ref_des="U2", rail_pad_names=["VOUT"], ground_pad_names=["GND"],
+                resistance_ohm=0.008, inductance_h=0.7e-9,
+            ),
+            measurement_port=ACMeasurementPort(
+                ref_des="U1", rail_pad_names=["VDD"], ground_pad_names=["VSS"],
+            ),
+            capacitors=[CapacitorModel(
+                ref_des="C12", rail_pad_names=["1"], ground_pad_names=["2"],
+                capacitance_f=4.7e-6, esr_ohm=0.015, esl_h=0.6e-9,
+            )],
+            optimizer_values_f=[100e-9, 1e-6],
+            optimizer_max_additions=3,
+        )
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
+            filepath = f.name
+
+        try:
+            save_config(self.rails, filepath, {"5V": profile})
+            project = load_project_config(filepath)
+            loaded = project.ac_profiles["5V"]
+
+            self.assertEqual(len(project.rails), 3)
+            self.assertEqual(loaded.source.ref_des, "U2")
+            self.assertEqual(loaded.measurement_port.ground_pad_names, ["VSS"])
+            self.assertAlmostEqual(loaded.capacitors[0].capacitance_f, 4.7e-6)
+            self.assertEqual(loaded.optimizer_max_additions, 3)
+        finally:
+            if Path(filepath).exists():
+                os.unlink(filepath)
+
+    def test_legacy_v1_config_migrates_without_ac_profiles(self):
+        """Existing Phase 1 files remain loadable after the schema extension."""
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
+            filepath = f.name
+            json.dump({"version": "1.0", "rails": []}, f)
+
+        try:
+            project = load_project_config(filepath)
+            self.assertEqual(project.rails, [])
+            self.assertEqual(project.ac_profiles, {})
         finally:
             if Path(filepath).exists():
                 os.unlink(filepath)
