@@ -153,6 +153,57 @@ class Plotter:
                 print(f"Impedance plot error: {e}")
             return None
 
+    def plot_thermal_3d(self, mesh, result):
+        """Render the solved volumetric temperature field."""
+        try:
+            nodes = list(mesh.nodes)
+            if len(nodes) > 50000:
+                stride = int(np.ceil(len(nodes) / 50000.0))
+                nodes = nodes[::stride]
+            coords = np.asarray([mesh.node_coords[node] for node in nodes], dtype=float)
+            temperatures = np.asarray([result.temperatures_c[node] for node in nodes], dtype=float)
+            fig = plt.figure(figsize=(8, 6), constrained_layout=True)
+            axis = fig.add_subplot(111, projection='3d')
+            scatter = axis.scatter(
+                coords[:, 0], coords[:, 1], coords[:, 2], c=temperatures,
+                cmap='inferno', s=5, alpha=0.8,
+            )
+            axis.set_xlabel('X (mm)')
+            axis.set_ylabel('Y (mm)')
+            axis.set_zlabel('Z (mm)')
+            axis.set_title('3D board temperature')
+            fig.colorbar(scatter, ax=axis, label='Temperature (C)', shrink=0.75)
+            return self._fig_to_bitmap(fig)
+        except Exception as e:
+            if self.debug:
+                print(f"Thermal 3D plot error: {e}")
+            return None
+
+    def plot_thermal_surface(self, mesh, result, side='TOP'):
+        """Render a top or bottom board temperature map."""
+        try:
+            if not mesh.node_map:
+                return None
+            target_iz = max(key[2] for key in mesh.node_map) if side.upper() == 'TOP' else 0
+            nodes = [node for (ix, iy, iz), node in mesh.node_map.items() if iz == target_iz]
+            if not nodes:
+                return None
+            xs = [mesh.node_coords[node][0] for node in nodes]
+            ys = [mesh.node_coords[node][1] for node in nodes]
+            temperatures = [result.temperatures_c[node] for node in nodes]
+            fig, axis = plt.subplots(figsize=(8, 5), constrained_layout=True)
+            plot = axis.scatter(xs, ys, c=temperatures, cmap='inferno', marker='s', s=18)
+            axis.set_aspect('equal', adjustable='box')
+            axis.set_xlabel('X (mm)')
+            axis.set_ylabel('Y (mm)')
+            axis.set_title(f'{side.title()} surface temperature')
+            fig.colorbar(plot, ax=axis, label='Temperature (C)')
+            return self._fig_to_bitmap(fig)
+        except Exception as e:
+            if self.debug:
+                print(f"Thermal surface plot error: {e}")
+            return None
+
     def _fig_to_bitmap(self, fig):
         buf = io.BytesIO()
         fig.savefig(buf, format='png', dpi=100)

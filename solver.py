@@ -1,6 +1,11 @@
 
 import sys
 
+try:
+    from .models import DCSolveResult
+except (ImportError, ValueError):
+    from models import DCSolveResult
+
 # Try imports, handle if missing (though they should be in KiCad 9)
 try:
     import numpy as np
@@ -27,7 +32,7 @@ class Solver:
         if self.log_callback:
             self.log_callback(f"[SOLVER] {msg}")
 
-    def solve(self, mesh, sources, loads):
+    def solve(self, mesh, sources, loads, branch_resistance_scales=None):
         """
         Solves the DC circuit Mesh: [G][V] = [I]
         
@@ -50,7 +55,23 @@ class Solver:
         idx_to_id = { i: nid for i, nid in enumerate(nodes) }
         
         # 2. Build Matrix G
-        if hasattr(mesh, 'G_coo_data') and len(mesh.G_coo_data) > 0:
+        if branch_resistance_scales is not None and getattr(mesh, 'branches', None):
+            G = scipy.sparse.lil_matrix((N, N))
+            scales = list(branch_resistance_scales)
+            if len(scales) != len(mesh.branches):
+                raise ValueError("One resistance scale is required for every mesh branch.")
+            for branch, scale in zip(mesh.branches, scales):
+                resistance = max(branch.resistance_ohm * max(float(scale), 1e-9), 1e-15)
+                conductance = 1.0 / resistance
+                u = id_to_idx.get(branch.node_a)
+                v = id_to_idx.get(branch.node_b)
+                if u is None or v is None:
+                    continue
+                G[u, u] += conductance
+                G[v, v] += conductance
+                G[u, v] -= conductance
+                G[v, u] -= conductance
+        elif hasattr(mesh, 'G_coo_data') and len(mesh.G_coo_data) > 0:
             if self.debug:
                 self._log(f"Using pre-computed sparse matrix ({len(mesh.G_coo_data)} entries).")
             # We have raw node IDs in G_coo_row/col, need to map to indices 0..N-1
@@ -161,4 +182,34 @@ class Solver:
             results[nid] = float(v_val)
             
         return results
+
+    def solve_detailed(self, mesh, sources, loads, branch_resistance_scales=None):
+        """Solve DC and retain branch currents/losses for thermal coupling."""
+        voltages = self.solve(
+            mesh,
+            sources,
+            loads,
+            branch_resistance_scales=branch_resistance_scales,
+        )
+        scales = (
+            list(branch_resistance_scales)
+            if branch_resistance_scales is not None
+            else [1.0] * len(getattr(mesh, 'branches', []))
+        )
+        if len(scales) != len(getattr(mesh, 'branches', [])):
+            raise ValueError("One resistance scale is required for every mesh branch.")
+        currents = []
+        losses = []
+        for branch, scale in zip(getattr(mesh, 'branches', []), scales):
+            resistance = max(branch.resistance_ohm * max(float(scale), 1e-9), 1e-15)
+            voltage_delta = voltages.get(branch.node_a, 0.0) - voltages.get(branch.node_b, 0.0)
+            current = voltage_delta / resistance
+            currents.append(float(current))
+            losses.append(float(current * current * resistance))
+        return DCSolveResult(
+            voltages=voltages,
+            branch_currents_a=currents,
+            branch_losses_w=losses,
+            total_loss_w=float(sum(losses)),
+        )
 

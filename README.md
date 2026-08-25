@@ -1,6 +1,6 @@
 # Ki-PIDA (KiCad Power Integrity & Delivery Analyzer)
 
-Ki-PIDA is a native KiCad plugin for DC and AC Power Integrity (PI) analysis. It allows PCB designers to simulate voltage drops (IR drop), current densities, thermal rise, and rail-to-ground impedance directly within the KiCad Pcbnew environment, eliminating complex external workflows.
+Ki-PIDA is a native KiCad plugin for DC, AC, and thermal Power Integrity (PI) analysis. It allows PCB designers to simulate voltage drops (IR drop), current densities, rail-to-ground impedance, and steady-state 3D board temperatures directly within the KiCad Pcbnew environment, eliminating complex external workflows.
 
 ## 🚀 Why Ki-PIDA?
 
@@ -22,6 +22,9 @@ Ki-PIDA democratizes high-end PI analysis by:
 - **Visual Feedback:** Interactive heatmaps for voltage and current density, with dedicated tabs for each power rail in the system.
 - **AC Impedance:** Sweep rail-to-ground impedance magnitude and phase over a logarithmic frequency range.
 - **Decoupling Optimization:** Rank values for existing unpopulated/DNP capacitor footprints against a target-impedance envelope.
+- **3D Thermal Model:** Solve through-stack and lateral heat conduction using the extracted PCB stackup, spatial copper coverage, and thermal vias.
+- **Airflow Convection:** Configure natural, forced, or custom heat-transfer coefficients with exposed top, bottom, and edge surfaces.
+- **Electro-Thermal Coupling:** Iterate DC copper loss and temperature-dependent copper resistance until the configured convergence threshold is reached.
 
 ## 📦 Installation
 
@@ -110,6 +113,20 @@ Once "Simulation Success" appears, the UI will jump to the **Results** tab.
 
 The optimizer is intentionally non-destructive: it reports footprint/value recommendations but does not modify the PCB or schematic. It only uses candidate capacitor locations already present on the board.
 
+## Tutorial: 3D Thermal and Airflow Analysis
+
+1. Define rail voltages, loads, and regulator efficiencies in **Power Tree & Config**, then open **3D Thermal**.
+2. Select the ambient temperature, thermal grid size, exposed surfaces, and an airflow mode:
+   - **Natural:** uses a conservative natural-convection coefficient.
+   - **Forced:** derives the coefficient from air speed and applies the configured flow direction across the board surface.
+   - **Custom:** uses a user-supplied heat-transfer coefficient.
+3. Choose **Refresh Power Estimates**. Load dissipation is estimated as `V × I`; regulator dissipation uses LDO voltage drop or switching efficiency. Double-click any component to enter a reviewed power and compact package thermal model.
+4. Choose **Run Thermal** for a single steady-state solve. Enable **Include DC copper losses** to reuse losses from the DC branch solution.
+5. Choose **Run Coupled** to iterate copper resistance, DC branch loss, and board temperature. Review the hotspot, energy balance, component junction estimates, and 3D/top/bottom plots in **Results**.
+6. Save the project configuration to persist the thermal profile in `<project>.kipida.json`.
+
+The airflow model applies convective boundary conditions to the 3D solid board mesh. It is intended for board-level design comparison and hotspot screening; it is not a volumetric CFD enclosure or fan model. Component junction temperatures use the configured compact `theta-JB` estimate and therefore require engineering review before sign-off.
+
 ## 🛠️ Technical Overview (For Developers)
 
 Ki-PIDA is built on a modular architecture designed for performance and maintainability.
@@ -121,10 +138,14 @@ Ki-PIDA is built on a modular architecture designed for performance and maintain
 - **AC Model (`ac_model.py`):** Builds coupled rail/return meshes and maps sources, measurement ports, and rail-to-ground capacitors.
 - **AC Solver (`ac_solver.py`):** Stamps frequency-dependent sparse complex admittance matrices for copper/via RL branches and capacitor RLC models.
 - **Decoupling Optimizer (`decoupling_optimizer.py`):** Deterministically searches existing candidate footprints against the target-impedance score.
+- **Thermal Model (`thermal_model.py`):** Combines stackup, board copper, vias, component placement, power-tree dissipation, and optional DC branch losses.
+- **Thermal Mesh (`thermal_mesh.py`):** Builds a finite-volume 3D solid mesh with anisotropic FR-4, spatial copper conductivity, thermal-via branches, radiation, and convective surface boundaries.
+- **Thermal Solver (`thermal_solver.py`):** Solves the sparse steady-state heat equation and reports hotspot, component junction estimates, and energy balance.
+- **Electro-Thermal Solver (`electrothermal.py`):** Iterates DC branch resistance and loss with the solved copper temperature field.
 - **Visualizer (`visualizer.py`):** Generates heatmaps via Matplotlib and renders them as overlays in KiCad.
 
 ### Methodology
-The tool utilizes a **Hybrid 2.5D Finite Difference Method (FDM)**. It represents PCB layers as 2D grids connected vertically by via/PTH elements. DC analysis uses resistive branches; AC analysis retains the same topology and adds stackup-sensitive branch inductance plus lumped source/capacitor RLC models. This is a quasi-static engineering model, not a full-wave 3D electromagnetic solver.
+Electrical analysis utilizes a **Hybrid 2.5D Finite Difference Method (FDM)**. It represents PCB layers as 2D grids connected vertically by via/PTH elements. DC analysis uses resistive branches; AC analysis retains the same topology and adds stackup-sensitive branch inductance plus lumped source/capacitor RLC models. Thermal analysis uses a separate **3D finite-volume solid-conduction model** through the physical stackup. This is a board-level engineering model, not a full-wave electromagnetic solver or volumetric CFD solver.
 
 ### Stack
 - **Languages:** Python 3.9+
@@ -134,7 +155,7 @@ The tool utilizes a **Hybrid 2.5D Finite Difference Method (FDM)**. It represent
 
 ## � Current State (Alpha)
 
-As of the current version, Ki-PIDA implements end-to-end DC IR drop and AC target-impedance analysis.
+As of the current version, Ki-PIDA implements end-to-end DC IR drop, AC target-impedance, and steady-state 3D thermal analysis.
 
 ### Capabilities:
 - **Comprehensive Extraction:** Extracts tracks, pads, and filled zones (respecting thermal reliefs and voids) from KiCad 9.0+ boards.
@@ -143,6 +164,8 @@ As of the current version, Ki-PIDA implements end-to-end DC IR drop and AC targe
 - **Automated Diagnostics:** Detects isolated copper nodes and disjoint electrical islands during the solve phase.
 - **Target-Impedance Sweep:** Reports worst-case impedance/frequency and PASS/FAIL against the configured envelope.
 - **Deterministic Decoupling Search:** Recommends values for existing DNP/candidate footprints without editing the board.
+- **Thermal and Airflow Solve:** Models 3D board conduction, natural/forced/custom convection, radiation, vias, and component heat sources.
+- **Coupled Iteration:** Feeds branch-level DC `I²R` losses into the thermal solve and updates copper resistance with temperature.
 
 ### User Experience:
 - **Automated Rail Discovery:** Instantly find power nets based on zone connectivity.
@@ -152,5 +175,5 @@ As of the current version, Ki-PIDA implements end-to-end DC IR drop and AC targe
 ## �🗺️ Roadmap
 
 - **Phase 1:** DC IR Drop, basic thermal checks, and power tree UI.
-- **Phase 2 (Current):** AC Impedance Analysis ($Z$ vs Frequency) and decoupling capacitor optimization.
-- **Phase 3:** Full 3D Thermal modeling with airflow convection.
+- **Phase 2:** AC Impedance Analysis ($Z$ vs Frequency) and decoupling capacitor optimization.
+- **Phase 3 (Current):** Full 3D board thermal modeling with airflow convection and iterative DC coupling.

@@ -5,18 +5,20 @@ from pathlib import Path
 try:
     from .models import (
         ACAnalysisSettings, ACMeasurementPort, ACSourceModel, CapacitorModel,
-        ComponentRef, PowerRail, ProjectConfig, UnifiedLoad, UnifiedSource,
-        VoltageRegulator,
+        AirflowSettings, ComponentRef, PowerRail, ProjectConfig,
+        ThermalAnalysisSettings, ThermalComponentModel, UnifiedLoad,
+        UnifiedSource, VoltageRegulator,
     )
 except (ImportError, ValueError):
     from models import (
         ACAnalysisSettings, ACMeasurementPort, ACSourceModel, CapacitorModel,
-        ComponentRef, PowerRail, ProjectConfig, UnifiedLoad, UnifiedSource,
-        VoltageRegulator,
+        AirflowSettings, ComponentRef, PowerRail, ProjectConfig,
+        ThermalAnalysisSettings, ThermalComponentModel, UnifiedLoad,
+        UnifiedSource, VoltageRegulator,
     )
 
-CONFIG_VERSION = "1.1"
-SUPPORTED_CONFIG_VERSIONS = {"1.0", CONFIG_VERSION}
+CONFIG_VERSION = "1.2"
+SUPPORTED_CONFIG_VERSIONS = {"1.0", "1.1", CONFIG_VERSION}
 
 
 def get_project_config_path(
@@ -41,8 +43,8 @@ def get_project_config_path(
 
     return directory / f"{config_stem}.kipida.json"
 
-def save_config(rails: List[PowerRail], filepath: str, ac_profiles=None):
-    """Save the power tree and optional AC profiles to a JSON sidecar."""
+def save_config(rails: List[PowerRail], filepath: str, ac_profiles=None, thermal_profile=None):
+    """Save the power tree and optional AC/thermal profiles to a JSON sidecar."""
     config = {
         "version": CONFIG_VERSION,
         "rails": [_rail_to_dict(rail) for rail in rails],
@@ -50,6 +52,9 @@ def save_config(rails: List[PowerRail], filepath: str, ac_profiles=None):
             name: _ac_settings_to_dict(settings)
             for name, settings in (ac_profiles or {}).items()
         },
+        "thermal_profile": (
+            _thermal_settings_to_dict(thermal_profile) if thermal_profile is not None else None
+        ),
     }
     
     with open(filepath, 'w') as f:
@@ -73,7 +78,13 @@ def load_project_config(filepath: str) -> ProjectConfig:
         name: _dict_to_ac_settings(settings)
         for name, settings in config.get("ac_profiles", {}).items()
     }
-    return ProjectConfig(rails=rails, ac_profiles=ac_profiles)
+    thermal_data = config.get("thermal_profile")
+    thermal_profile = _dict_to_thermal_settings(thermal_data) if thermal_data else None
+    return ProjectConfig(
+        rails=rails,
+        ac_profiles=ac_profiles,
+        thermal_profile=thermal_profile,
+    )
 
 
 def load_config(filepath: str) -> List[PowerRail]:
@@ -83,6 +94,10 @@ def load_config(filepath: str) -> List[PowerRail]:
 
 def load_ac_profiles(filepath: str):
     return load_project_config(filepath).ac_profiles
+
+
+def load_thermal_profile(filepath: str):
+    return load_project_config(filepath).thermal_profile
 
 def _rail_to_dict(rail: PowerRail) -> dict:
     """Convert PowerRail to dictionary."""
@@ -249,4 +264,73 @@ def _dict_to_ac_settings(data: dict) -> ACAnalysisSettings:
             "optimizer_values_f", [10e-9, 47e-9, 100e-9, 470e-9, 1e-6, 4.7e-6, 10e-6]
         )],
         optimizer_max_additions=int(data.get("optimizer_max_additions", 8)),
+    )
+
+
+def _thermal_settings_to_dict(settings: ThermalAnalysisSettings) -> dict:
+    return {
+        "ambient_c": settings.ambient_c,
+        "grid_size_mm": settings.grid_size_mm,
+        "airflow": {
+            "mode": settings.airflow.mode,
+            "velocity_m_s": settings.airflow.velocity_m_s,
+            "direction_deg": settings.airflow.direction_deg,
+            "custom_h_w_m2k": settings.airflow.custom_h_w_m2k,
+            "expose_top": settings.airflow.expose_top,
+            "expose_bottom": settings.airflow.expose_bottom,
+            "expose_edges": settings.airflow.expose_edges,
+        },
+        "include_radiation": settings.include_radiation,
+        "emissivity": settings.emissivity,
+        "include_dc_copper_losses": settings.include_dc_copper_losses,
+        "coupled_iterations": settings.coupled_iterations,
+        "convergence_c": settings.convergence_c,
+        "relaxation": settings.relaxation,
+        "copper_temp_coefficient_per_c": settings.copper_temp_coefficient_per_c,
+        "components": [{
+            "ref_des": component.ref_des,
+            "power_w": component.power_w,
+            "width_mm": component.width_mm,
+            "depth_mm": component.depth_mm,
+            "height_mm": component.height_mm,
+            "theta_jb_c_per_w": component.theta_jb_c_per_w,
+            "max_junction_c": component.max_junction_c,
+            "enabled": component.enabled,
+            "model_source": component.model_source,
+        } for component in settings.components],
+    }
+
+
+def _dict_to_thermal_settings(data: dict) -> ThermalAnalysisSettings:
+    airflow = data.get("airflow", {})
+    return ThermalAnalysisSettings(
+        ambient_c=float(data.get("ambient_c", 25.0)),
+        grid_size_mm=float(data.get("grid_size_mm", 1.0)),
+        airflow=AirflowSettings(
+            mode=airflow.get("mode", "NATURAL"),
+            velocity_m_s=float(airflow.get("velocity_m_s", 0.0)),
+            direction_deg=float(airflow.get("direction_deg", 0.0)),
+            custom_h_w_m2k=float(airflow.get("custom_h_w_m2k", 10.0)),
+            expose_top=bool(airflow.get("expose_top", True)),
+            expose_bottom=bool(airflow.get("expose_bottom", True)),
+            expose_edges=bool(airflow.get("expose_edges", True)),
+        ),
+        include_radiation=bool(data.get("include_radiation", True)),
+        emissivity=float(data.get("emissivity", 0.9)),
+        include_dc_copper_losses=bool(data.get("include_dc_copper_losses", True)),
+        coupled_iterations=int(data.get("coupled_iterations", 6)),
+        convergence_c=float(data.get("convergence_c", 0.1)),
+        relaxation=float(data.get("relaxation", 0.6)),
+        copper_temp_coefficient_per_c=float(data.get("copper_temp_coefficient_per_c", 0.00393)),
+        components=[ThermalComponentModel(
+            ref_des=component["ref_des"],
+            power_w=float(component.get("power_w", 0.0)),
+            width_mm=float(component.get("width_mm", 3.0)),
+            depth_mm=float(component.get("depth_mm", 3.0)),
+            height_mm=float(component.get("height_mm", 1.0)),
+            theta_jb_c_per_w=float(component.get("theta_jb_c_per_w", 20.0)),
+            max_junction_c=float(component.get("max_junction_c", 125.0)),
+            enabled=bool(component.get("enabled", True)),
+            model_source=component.get("model_source", "estimated"),
+        ) for component in data.get("components", [])],
     )

@@ -47,6 +47,8 @@ class PowerTreePanel(wx.Panel):
         self.active_rail = None
         self.ac_profiles_provider = None
         self.ac_profiles_consumer = None
+        self.thermal_profile_provider = None
+        self.thermal_profile_consumer = None
         
         self._init_ui()
 
@@ -157,6 +159,8 @@ class PowerTreePanel(wx.Panel):
                 self.rails = project_config.rails
                 if self.ac_profiles_consumer:
                     self.ac_profiles_consumer(project_config.ac_profiles)
+                if self.thermal_profile_consumer:
+                    self.thermal_profile_consumer(project_config.thermal_profile)
                 self.log(f"Loaded configuration from {config_path.name} ({len(self.rails)} rails)")
             except Exception as e:
                 self.log(f"Failed to load config: {e}. Running auto-scan instead.")
@@ -640,7 +644,15 @@ class PowerTreePanel(wx.Panel):
         
         try:
             ac_profiles = self.ac_profiles_provider() if self.ac_profiles_provider else {}
-            save_config(self.rails, str(config_path), ac_profiles=ac_profiles)
+            thermal_profile = (
+                self.thermal_profile_provider() if self.thermal_profile_provider else None
+            )
+            save_config(
+                self.rails,
+                str(config_path),
+                ac_profiles=ac_profiles,
+                thermal_profile=thermal_profile,
+            )
             self.log(f"Configuration saved to {config_path.name}")
             wx.MessageBox(f"Configuration saved successfully to:\n{config_path}", "Success", wx.OK | wx.ICON_INFORMATION)
         except Exception as e:
@@ -663,6 +675,8 @@ class PowerTreePanel(wx.Panel):
             self.rails = project_config.rails
             if self.ac_profiles_consumer:
                 self.ac_profiles_consumer(project_config.ac_profiles)
+            if self.thermal_profile_consumer:
+                self.thermal_profile_consumer(project_config.thermal_profile)
             self.log(f"Loaded configuration from {config_path.name} ({len(self.rails)} rails)")
             
             # Refresh UI

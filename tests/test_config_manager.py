@@ -11,8 +11,9 @@ if plugin_dir not in sys.path:
 
 from config_manager import get_project_config_path, save_config, load_config, load_project_config
 from models import (
-    ACAnalysisSettings, ACMeasurementPort, ACSourceModel, CapacitorModel,
+    ACAnalysisSettings, ACMeasurementPort, ACSourceModel, AirflowSettings, CapacitorModel,
     PowerRail, UnifiedSource, UnifiedLoad, VoltageRegulator, ComponentRef,
+    ThermalAnalysisSettings, ThermalComponentModel,
 )
 
 class TestConfigManager(unittest.TestCase):
@@ -97,7 +98,7 @@ class TestConfigManager(unittest.TestCase):
             with open(filepath, 'r') as f:
                 data = json.load(f)
             
-            self.assertEqual(data["version"], "1.1")
+            self.assertEqual(data["version"], "1.2")
             self.assertEqual(len(data["rails"]), 3)
             
             # Verify 12V rail
@@ -258,6 +259,53 @@ class TestConfigManager(unittest.TestCase):
             project = load_project_config(filepath)
             self.assertEqual(project.rails, [])
             self.assertEqual(project.ac_profiles, {})
+            self.assertIsNone(project.thermal_profile)
+        finally:
+            if Path(filepath).exists():
+                os.unlink(filepath)
+
+    def test_thermal_profile_round_trip(self):
+        profile = ThermalAnalysisSettings(
+            ambient_c=35.0,
+            grid_size_mm=1.5,
+            airflow=AirflowSettings(
+                mode="FORCED", velocity_m_s=2.5, direction_deg=0.0,
+                expose_top=True, expose_bottom=False, expose_edges=True,
+            ),
+            include_radiation=True,
+            emissivity=0.82,
+            components=[ThermalComponentModel(
+                ref_des="U2", power_w=1.25, width_mm=4.0, depth_mm=4.0,
+                theta_jb_c_per_w=8.0, max_junction_c=150.0,
+                model_source="user",
+            )],
+        )
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
+            filepath = f.name
+
+        try:
+            save_config(self.rails, filepath, thermal_profile=profile)
+            loaded = load_project_config(filepath).thermal_profile
+
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded.airflow.mode, "FORCED")
+            self.assertAlmostEqual(loaded.airflow.velocity_m_s, 2.5)
+            self.assertFalse(loaded.airflow.expose_bottom)
+            self.assertTrue(loaded.include_radiation)
+            self.assertEqual(loaded.components[0].ref_des, "U2")
+            self.assertAlmostEqual(loaded.components[0].power_w, 1.25)
+        finally:
+            if Path(filepath).exists():
+                os.unlink(filepath)
+
+    def test_legacy_v11_config_migrates_without_thermal_profile(self):
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
+            filepath = f.name
+            json.dump({"version": "1.1", "rails": [], "ac_profiles": {}}, f)
+
+        try:
+            project = load_project_config(filepath)
+            self.assertIsNone(project.thermal_profile)
         finally:
             if Path(filepath).exists():
                 os.unlink(filepath)

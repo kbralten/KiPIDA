@@ -140,6 +140,7 @@ class ProjectConfig:
     """Complete persisted Ki-PIDA project configuration."""
     rails: List[PowerRail] = field(default_factory=list)
     ac_profiles: Dict[str, ACAnalysisSettings] = field(default_factory=dict)
+    thermal_profile: Optional["ThermalAnalysisSettings"] = None
 
 
 @dataclass
@@ -166,6 +167,98 @@ class DecouplingOptimizationResult:
     optimized: ImpedanceSweepResult
     recommendations: List[OptimizationRecommendation] = field(default_factory=list)
     reached_target: bool = False
+
+
+@dataclass
+class DCSolveResult:
+    """Detailed DC result used by electro-thermal analysis."""
+    voltages: Dict[int, float] = field(default_factory=dict)
+    branch_currents_a: List[float] = field(default_factory=list)
+    branch_losses_w: List[float] = field(default_factory=list)
+    total_loss_w: float = 0.0
+
+
+@dataclass
+class AirflowSettings:
+    """Convective boundary settings for the exposed PCB surfaces."""
+    mode: str = "NATURAL"  # NATURAL, FORCED, CUSTOM
+    velocity_m_s: float = 0.0
+    direction_deg: float = 0.0
+    custom_h_w_m2k: float = 10.0
+    expose_top: bool = True
+    expose_bottom: bool = True
+    expose_edges: bool = True
+
+
+@dataclass
+class ThermalComponentModel:
+    """Compact component-to-board thermal model and heat source."""
+    ref_des: str
+    power_w: float = 0.0
+    width_mm: float = 3.0
+    depth_mm: float = 3.0
+    height_mm: float = 1.0
+    theta_jb_c_per_w: float = 20.0
+    max_junction_c: float = 125.0
+    enabled: bool = True
+    model_source: str = "estimated"
+
+
+@dataclass
+class ThermalAnalysisSettings:
+    """Persisted settings for steady-state 3D thermal analysis."""
+    ambient_c: float = 25.0
+    grid_size_mm: float = 1.0
+    airflow: AirflowSettings = field(default_factory=AirflowSettings)
+    include_radiation: bool = True
+    emissivity: float = 0.9
+    include_dc_copper_losses: bool = True
+    coupled_iterations: int = 6
+    convergence_c: float = 0.1
+    relaxation: float = 0.6
+    copper_temp_coefficient_per_c: float = 0.00393
+    components: List[ThermalComponentModel] = field(default_factory=list)
+
+
+@dataclass
+class ThermalHotspot:
+    node_id: int
+    x_mm: float
+    y_mm: float
+    z_mm: float
+    temperature_c: float
+
+
+@dataclass
+class ComponentThermalResult:
+    ref_des: str
+    board_temperature_c: float
+    junction_temperature_c: float
+    power_w: float
+    max_junction_c: float
+    margin_c: float
+    model_source: str = "estimated"
+
+
+@dataclass
+class ThermalResult:
+    temperatures_c: Dict[int, float] = field(default_factory=dict)
+    hotspot: Optional[ThermalHotspot] = None
+    component_results: List[ComponentThermalResult] = field(default_factory=list)
+    total_input_power_w: float = 0.0
+    total_boundary_power_w: float = 0.0
+    energy_balance_error_pct: float = 0.0
+    convection_coefficient_w_m2k: float = 0.0
+    iterations: int = 1
+    converged: bool = True
+
+
+@dataclass
+class ElectroThermalResult:
+    thermal: ThermalResult
+    dc_results: Dict[str, DCSolveResult] = field(default_factory=dict)
+    iterations: int = 1
+    converged: bool = True
 
 def generate_regulator_name(input_ref_des: str, output_ref_des: str, output_rail_name: str = "") -> str:
     """

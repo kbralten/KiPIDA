@@ -2,8 +2,8 @@
     "$schema": "https://go.kicad.org/api/schemas/v1",
     "identifier": "com.github.kbralten.kipida",
     "name": "Ki-PIDA",
-    "description": "DC and AC Power Integrity & Delivery Analyzer for KiCad",
-    "version": "0.6.0",
+    "description": "DC, AC and 3D Thermal Power Integrity Analyzer for KiCad",
+    "version": "0.7.0",
     "kicad_version": "9.99",
     "status": "stable",
     "runtime": {

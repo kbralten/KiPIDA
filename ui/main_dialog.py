@@ -14,7 +14,12 @@ from solver import Solver
 from ac_model import ACModelBuilder, format_capacitance
 from ac_solver import ACSolver
 from decoupling_optimizer import DecouplingOptimizer
+from electrothermal import ElectroThermalSolver
+from thermal_mesh import ThermalMesher
+from thermal_model import CopperLossPoint, ThermalModelBuilder
+from thermal_solver import ThermalSolver
 from ui.ac_analysis_panel import ACAnalysisPanel
+from ui.thermal_analysis_panel import ThermalAnalysisPanel
 from ui.power_tree_panel import PowerTreePanel
 from plotter import Plotter
 
@@ -106,12 +111,26 @@ class KiPIDA_MainDialog(wx.Dialog):
         self.power_tree.ac_profiles_provider = self.ac_panel.get_profiles
         self.power_tree.ac_profiles_consumer = self.ac_panel.set_profiles
 
-        # Tab 3: Results
+        # Tab 3: 3D Thermal Configuration
+        self.tab_thermal = wx.Panel(self.notebook)
+        thermal_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.thermal_panel = ThermalAnalysisPanel(
+            self.tab_thermal,
+            rails_provider=lambda: self.power_tree.rails,
+            log_callback=self.log,
+        )
+        thermal_sizer.Add(self.thermal_panel, 1, wx.EXPAND | wx.ALL, 5)
+        self.tab_thermal.SetSizer(thermal_sizer)
+        self.notebook.AddPage(self.tab_thermal, "3D Thermal")
+        self.power_tree.thermal_profile_provider = self.thermal_panel.get_settings
+        self.power_tree.thermal_profile_consumer = self.thermal_panel.set_settings
+
+        # Tab 4: Results
         self.tab_results = wx.Panel(self.notebook)
         self._init_results_tab(self.tab_results)
         self.notebook.AddPage(self.tab_results, "Results")
         
-        # Tab 4: Log/Debug
+        # Tab 5: Log/Debug
         self.tab_log = wx.Panel(self.notebook)
         self._init_log_tab(self.tab_log)
         self.notebook.AddPage(self.tab_log, "Log")
@@ -124,12 +143,16 @@ class KiPIDA_MainDialog(wx.Dialog):
         self.btn_run = wx.Button(self, label="Run DC Simulation")
         self.btn_run_ac = wx.Button(self, label="Run AC Analysis")
         self.btn_optimize = wx.Button(self, label="Optimize Decoupling")
+        self.btn_run_thermal = wx.Button(self, label="Run Thermal")
+        self.btn_run_coupled = wx.Button(self, label="Run Coupled")
         self.btn_cancel = wx.Button(self, wx.ID_CANCEL, "Close")
         
         btn_sizer.AddStretchSpacer()
         btn_sizer.Add(self.btn_run, 0, wx.ALL, 5)
         btn_sizer.Add(self.btn_run_ac, 0, wx.ALL, 5)
         btn_sizer.Add(self.btn_optimize, 0, wx.ALL, 5)
+        btn_sizer.Add(self.btn_run_thermal, 0, wx.ALL, 5)
+        btn_sizer.Add(self.btn_run_coupled, 0, wx.ALL, 5)
         btn_sizer.Add(self.btn_cancel, 0, wx.ALL, 5)
         
         main_sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 5)
@@ -140,6 +163,8 @@ class KiPIDA_MainDialog(wx.Dialog):
         self.btn_run.Bind(wx.EVT_BUTTON, self.on_run)
         self.btn_run_ac.Bind(wx.EVT_BUTTON, self.on_run_ac)
         self.btn_optimize.Bind(wx.EVT_BUTTON, self.on_optimize_decoupling)
+        self.btn_run_thermal.Bind(wx.EVT_BUTTON, self.on_run_thermal)
+        self.btn_run_coupled.Bind(wx.EVT_BUTTON, self.on_run_coupled_thermal)
         self.btn_cancel.Bind(wx.EVT_BUTTON, self.on_close)
         self.notebook.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.on_notebook_page_changed)
         
@@ -149,6 +174,8 @@ class KiPIDA_MainDialog(wx.Dialog):
     def on_notebook_page_changed(self, event):
         if event.GetSelection() == 1:
             wx.CallAfter(self.ac_panel.refresh)
+        elif event.GetSelection() == 2 and not self.thermal_panel.settings.components:
+            wx.CallAfter(self.thermal_panel.refresh_components)
         event.Skip()
     
     def _init_results_tab(self, parent):
@@ -390,7 +417,7 @@ class KiPIDA_MainDialog(wx.Dialog):
              wx.MessageBox("No power rails defined.")
              return
              
-        self.notebook.SetSelection(3) # Switch to Log
+        self.notebook.SetSelection(4) # Switch to Log
         self.log(f"--- Starting System Simulation ({len(system_rails)} rails) ---")
         
         try:
@@ -527,29 +554,14 @@ class KiPIDA_MainDialog(wx.Dialog):
                     if debug_mode:
                         self.log(f"  Regulator {reg.name} draws {input_current:.2f}A from {rail.net_name} ({reg.reg_type})")
                     
-                    if input_current == 0:
-                        continue
-                    
-                    # Apply load at regulator input pads
-                    nodes = self._get_mesh_nodes(mesh, reg.input_ref_des, reg.input_pad_names, debug_mode)
-                    if not nodes:
-                        self.log(f"  WARNING: Regulator {reg.name} input at {reg.input_ref_des} pads {reg.input_pad_names} found NO mesh nodes!")
-                        continue
-                    
-                    i_per_node = input_current / len(nodes)
-                    for nid in nodes:
-                        solver_loads.append({'node_id': nid, 'current': i_per_node})
-                    
-                    if debug_mode:
-                        self.log(f"  Regulator {reg.name} draws {input_current:.2f}A from {rail.net_name} ({reg.reg_type})")
-                    
                 # C. Solve
                 if not solver_sources:
                     self.log(f"  Warning: No sources for {rail.net_name}. Skipping solve.")
                     continue
                     
                 solver = Solver(debug=debug_mode, log_callback=self.log)
-                results = solver.solve(mesh, solver_sources, solver_loads)
+                detailed_result = solver.solve_detailed(mesh, solver_sources, solver_loads)
+                results = detailed_result.voltages
                 
                 # D. Store Results
                 v_vals = list(results.values())
@@ -559,7 +571,10 @@ class KiPIDA_MainDialog(wx.Dialog):
                     self.system_results[rail.net_name] = {
                         'mesh': mesh,
                         'results': results,
-                        'stats': (v_min, v_max, drop)
+                        'stats': (v_min, v_max, drop),
+                        'sources': solver_sources,
+                        'loads': solver_loads,
+                        'detailed_result': detailed_result,
                     }
                     self.log(f"  Solved {rail.net_name}: Drop {drop:.4f} V")
                 else:
@@ -604,7 +619,7 @@ class KiPIDA_MainDialog(wx.Dialog):
             wx.SafeYield()
 
     def on_run_ac(self, event):
-        self.notebook.SetSelection(3)
+        self.notebook.SetSelection(4)
         self.log("--- Starting AC Impedance Analysis ---")
         try:
             settings, network = self._prepare_ac_analysis()
@@ -618,7 +633,7 @@ class KiPIDA_MainDialog(wx.Dialog):
             wx.MessageBox(str(exc), "AC Analysis Error", wx.OK | wx.ICON_ERROR)
 
     def on_optimize_decoupling(self, event):
-        self.notebook.SetSelection(3)
+        self.notebook.SetSelection(4)
         self.log("--- Starting Decoupling Optimization ---")
         try:
             settings, network = self._prepare_ac_analysis()
@@ -670,7 +685,150 @@ class KiPIDA_MainDialog(wx.Dialog):
             optimization.optimized if optimization else None,
         )
         self._add_plot_tab("AC Impedance", bitmap)
-        self.notebook.SetSelection(2)
+        self.notebook.SetSelection(3)
+
+    def _dc_copper_loss_points(self):
+        losses = []
+        for data in getattr(self, "system_results", {}).values():
+            mesh = data.get("mesh")
+            detailed = data.get("detailed_result")
+            if mesh is None or detailed is None:
+                continue
+            for branch, power in zip(mesh.branches, detailed.branch_losses_w):
+                if power <= 0:
+                    continue
+                coord_a = mesh.node_coords.get(branch.node_a)
+                coord_b = mesh.node_coords.get(branch.node_b)
+                if coord_a is None or coord_b is None:
+                    continue
+                losses.append(CopperLossPoint(
+                    x_mm=(coord_a[0] + coord_b[0]) / 2.0,
+                    y_mm=(coord_a[1] + coord_b[1]) / 2.0,
+                    layer_id=coord_a[2],
+                    power_w=power,
+                ))
+        return losses
+
+    def _thermal_progress(self, completed, total, detail):
+        self.log(f"Thermal progress: {completed}/{total} ({detail})")
+        wx.SafeYield()
+
+    def _prepare_thermal_analysis(self, coupled=False):
+        if not self.thermal_panel.settings.components:
+            self.thermal_panel.refresh_components(preserve_user=True)
+        settings = self.thermal_panel.get_settings()
+        if settings.include_dc_copper_losses and not getattr(self, "system_results", None):
+            self.log("No current DC result; running DC analysis first.")
+            self.on_run(None)
+        if coupled and not getattr(self, "system_results", None):
+            raise ValueError("Coupled analysis requires a successful DC analysis.")
+
+        copper_losses = [] if coupled else (
+            self._dc_copper_loss_points() if settings.include_dc_copper_losses else []
+        )
+        builder = ThermalModelBuilder(
+            self.board,
+            debug=self.chk_debug.GetValue(),
+            log_callback=self.log,
+        )
+        model = builder.build(
+            settings,
+            rails=self.power_tree.rails,
+            copper_losses=copper_losses,
+        )
+        mesher = ThermalMesher(
+            debug=self.chk_debug.GetValue(),
+            log_callback=self.log,
+        )
+        mesh = mesher.generate_mesh(model, settings, progress_callback=self._thermal_progress)
+        return settings, mesh
+
+    def on_run_thermal(self, event):
+        self.notebook.SetSelection(4)
+        self.log("--- Starting 3D Thermal Analysis ---")
+        try:
+            settings, mesh = self._prepare_thermal_analysis(coupled=False)
+            solver = ThermalSolver(debug=self.chk_debug.GetValue(), log_callback=self.log)
+            result = solver.solve(
+                mesh,
+                ambient_c=settings.ambient_c,
+                progress_callback=self._thermal_progress,
+            )
+            self.thermal_mesh = mesh
+            self.thermal_result = result
+            self._update_thermal_results_ui(mesh, result, coupled=False)
+        except Exception as exc:
+            self.log(f"Thermal Analysis Error: {exc}")
+            wx.MessageBox(str(exc), "Thermal Analysis Error", wx.OK | wx.ICON_ERROR)
+
+    def on_run_coupled_thermal(self, event):
+        self.notebook.SetSelection(4)
+        self.log("--- Starting Coupled DC / 3D Thermal Analysis ---")
+        try:
+            settings, mesh = self._prepare_thermal_analysis(coupled=True)
+            rail_contexts = {
+                name: {
+                    "mesh": data["mesh"],
+                    "sources": data.get("sources", []),
+                    "loads": data.get("loads", []),
+                } for name, data in self.system_results.items()
+            }
+            solver = ElectroThermalSolver(
+                debug=self.chk_debug.GetValue(),
+                log_callback=self.log,
+            )
+            coupled_result = solver.solve(
+                mesh,
+                settings,
+                rail_contexts,
+                progress_callback=self._thermal_progress,
+            )
+            self.thermal_mesh = mesh
+            self.thermal_result = coupled_result.thermal
+            self.electrothermal_result = coupled_result
+            self._update_thermal_results_ui(mesh, coupled_result.thermal, coupled=True)
+        except Exception as exc:
+            self.log(f"Coupled Thermal Analysis Error: {exc}")
+            wx.MessageBox(str(exc), "Coupled Thermal Analysis Error", wx.OK | wx.ICON_ERROR)
+
+    def _update_thermal_results_ui(self, mesh, result, coupled=False):
+        hotspot = result.hotspot
+        lines = [
+            "3D Thermal Analysis Results",
+            "===========================",
+            f"Mode: {'Coupled DC / thermal' if coupled else 'Thermal'}",
+            f"Hotspot: {hotspot.temperature_c:.3f} C at "
+            f"({hotspot.x_mm:.2f}, {hotspot.y_mm:.2f}, {hotspot.z_mm:.3f}) mm",
+            f"Input heat: {result.total_input_power_w:.6g} W",
+            f"Boundary heat: {result.total_boundary_power_w:.6g} W",
+            f"Energy balance error: {result.energy_balance_error_pct:.4g}%",
+            f"Effective h: {result.convection_coefficient_w_m2k:.4g} W/m2K",
+            f"Iterations: {result.iterations} ({'converged' if result.converged else 'limit reached'})",
+            "",
+            "Component junction estimates:",
+        ]
+        if result.component_results:
+            for component in result.component_results:
+                status = "OK" if component.margin_c >= 0 else "OVER LIMIT"
+                lines.append(
+                    f"  - {component.ref_des}: Tj={component.junction_temperature_c:.2f} C, "
+                    f"P={component.power_w:.4g} W, margin={component.margin_c:.2f} C "
+                    f"[{status}; {component.model_source}]"
+                )
+        else:
+            lines.append("  - No mapped component heat source.")
+        lines.extend([
+            "",
+            "Model scope: steady-state 3D solid conduction with convective boundaries; "
+            "this is not a volumetric CFD airflow solution.",
+        ])
+        self.result_text.SetValue("\n".join(lines))
+        self.results_notebook.DeleteAllPages()
+        plotter = Plotter(debug=self.chk_debug.GetValue())
+        self._add_plot_tab("Thermal 3D", plotter.plot_thermal_3d(mesh, result))
+        self._add_plot_tab("Top Surface", plotter.plot_thermal_surface(mesh, result, "TOP"))
+        self._add_plot_tab("Bottom Surface", plotter.plot_thermal_surface(mesh, result, "BOTTOM"))
+        self.notebook.SetSelection(3)
 
     def _debug_plot_geo(self, extractor, geo):
         try:
@@ -774,7 +932,7 @@ class KiPIDA_MainDialog(wx.Dialog):
             self.results_notebook.AddPage(rail_notebook, rail_name)
         
         # Switch to Results tab
-        self.notebook.SetSelection(2)
+        self.notebook.SetSelection(3)
 
     def on_close(self, event):
         self.EndModal(wx.ID_CANCEL)

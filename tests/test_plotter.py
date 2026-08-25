@@ -80,5 +80,34 @@ class TestPlotter(unittest.TestCase):
 
         self.assertIsNotNone(bitmap)
 
+    def test_plot_thermal_views(self):
+        thermal_mesh = SimpleNamespace(
+            nodes=[0, 1, 2, 3],
+            node_coords={
+                0: (0.0, 0.0, 0.0),
+                1: (1.0, 0.0, 0.0),
+                2: (0.0, 1.0, 1.6),
+                3: (1.0, 1.0, 1.6),
+            },
+            layer_specs=[
+                SimpleNamespace(layer_id=0),
+                SimpleNamespace(layer_id=31),
+            ],
+            node_layers={0: 0, 1: 0, 2: 31, 3: 31},
+            node_map={
+                (0, 0, 0): 0,
+                (1, 0, 0): 1,
+                (0, 1, 1): 2,
+                (1, 1, 1): 3,
+            },
+        )
+        result = SimpleNamespace(
+            temperatures_c={0: 28.0, 1: 30.0, 2: 35.0, 3: 32.0},
+        )
+
+        self.assertIsNotNone(self.plotter.plot_thermal_3d(thermal_mesh, result))
+        self.assertIsNotNone(self.plotter.plot_thermal_surface(thermal_mesh, result, side="TOP"))
+        self.assertIsNotNone(self.plotter.plot_thermal_surface(thermal_mesh, result, side="BOTTOM"))
+
 if __name__ == '__main__':
     unittest.main()

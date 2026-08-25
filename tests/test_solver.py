@@ -104,5 +104,25 @@ class TestSolver(unittest.TestCase):
         self.assertAlmostEqual(result[0], 10.0, places=5)
         self.assertAlmostEqual(result[1], 9.0, places=5)
 
+    def test_detailed_result_reports_branch_loss(self):
+        from mesh import Mesh
+
+        solver = self.solver_class()
+        mesh = Mesh()
+        mesh.nodes = [0, 1]
+        mesh.node_coords = {0: (0.0, 0.0, 0), 1: (1.0, 0.0, 0)}
+        mesh.add_edge_direct(0, 1, g=1.0)
+
+        result = solver.solve_detailed(
+            mesh,
+            sources=[{"node_id": 0, "voltage": 10.0}],
+            loads=[{"node_id": 1, "current": 1.0}],
+        )
+
+        self.assertAlmostEqual(result.voltages[1], 9.0, places=5)
+        self.assertAlmostEqual(result.branch_currents_a[0], 1.0, places=5)
+        self.assertAlmostEqual(result.branch_losses_w[0], 1.0, places=5)
+        self.assertAlmostEqual(result.total_loss_w, 1.0, places=5)
+
 if __name__ == '__main__':
     unittest.main()
