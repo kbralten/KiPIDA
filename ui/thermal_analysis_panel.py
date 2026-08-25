@@ -78,7 +78,7 @@ class ThermalAnalysisPanel(wx.Panel):
         self.txt_velocity = wx.TextCtrl(settings_parent, value="0")
         self.txt_direction = wx.TextCtrl(settings_parent, value="0")
         self.txt_custom_h = wx.TextCtrl(settings_parent, value="10")
-        self.txt_iterations = wx.TextCtrl(settings_parent, value="6")
+        self.txt_iterations = wx.TextCtrl(settings_parent, value="10")
         self.txt_convergence = wx.TextCtrl(settings_parent, value="0.1")
 
         rows = [

@@ -132,6 +132,8 @@ The optimizer is intentionally non-destructive: it reports footprint/value recom
 7. Choose **Run Coupled** to iterate copper resistance, DC branch loss, and board temperature. Review the hotspot, energy balance, component junction estimates, and 3D/top/bottom plots in **Results**. The textual report is published immediately; the plots are rendered in the background so the KiCad interface remains responsive.
 8. Save the project configuration to persist the thermal profile in `<project>.kipida.json`.
 
+DC meshes can contain small copper fragments that are not electrically connected to a configured source. Ki-PIDA reports and excludes unloaded floating islands from voltage-drop statistics, loss calculations, and plots. An island containing a configured load but no source is reported as a connectivity error.
+
 The airflow model applies convective boundary conditions to the 3D solid board mesh. It is intended for board-level design comparison and hotspot screening; it is not a volumetric CFD enclosure or fan model. Component junction temperatures use the configured compact `theta-JB` estimate and therefore require engineering review before sign-off.
 
 ## Tutorial: Enclosure CFD and Conjugate Heat Transfer

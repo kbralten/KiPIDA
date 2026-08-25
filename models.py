@@ -222,7 +222,7 @@ class ThermalAnalysisSettings:
     include_radiation: bool = True
     emissivity: float = 0.9
     include_dc_copper_losses: bool = True
-    coupled_iterations: int = 6
+    coupled_iterations: int = 10
     convergence_c: float = 0.1
     relaxation: float = 0.6
     copper_temp_coefficient_per_c: float = 0.00393

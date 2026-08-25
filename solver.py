@@ -112,6 +112,61 @@ class Solver:
                 G[u, v] -= g
                 G[v, u] -= g
             
+        # Determine electrical connectivity before applying Dirichlet rows.
+        # Replacing a source row with an identity row changes the matrix graph
+        # and can create artificial one-node islands in diagnostics.  It also
+        # leaves genuinely floating copper islands in a singular system.
+        valid_node_mask = np.ones(N, dtype=bool)
+        floating_representatives = []
+        try:
+            from scipy.sparse.csgraph import connected_components
+
+            connectivity_matrix = G.tocsr()
+            n_components, component_labels = connected_components(
+                csgraph=connectivity_matrix,
+                directed=False,
+                return_labels=True,
+            )
+            source_components = set()
+            for source in sources:
+                idx = id_to_idx.get(source.get('node_id'))
+                if idx is not None:
+                    source_components.add(int(component_labels[idx]))
+
+            valid_node_mask = np.array(
+                [int(label) in source_components for label in component_labels],
+                dtype=bool,
+            )
+            if n_components > 1:
+                self._log(f"Detected {n_components} copper islands before source constraints.")
+
+            for component in range(n_components):
+                if component in source_components:
+                    continue
+                component_indices = np.flatnonzero(component_labels == component)
+                if len(component_indices) == 0:
+                    continue
+                floating_representatives.append(int(component_indices[0]))
+                load_nodes = {
+                    load.get('node_id') for load in loads
+                    if load.get('node_id') in id_to_idx
+                    and int(component_labels[id_to_idx[load.get('node_id')]]) == component
+                    and abs(float(load.get('current', 0.0))) > 0.0
+                }
+                if load_nodes:
+                    self._log(
+                        f"ERROR: Island #{component} ({len(component_indices)} nodes) has "
+                        f"{len(load_nodes)} load node(s) but no voltage source; "
+                        "its loads and voltages are excluded."
+                    )
+                else:
+                    self._log(
+                        f"Ignoring floating island #{component} ({len(component_indices)} nodes): "
+                        "no voltage source or load."
+                    )
+        except Exception as e:
+            self._log(f"Connectivity diagnostic failed: {e}")
+
         # Initialize Vector I
         I = np.zeros(N)
 
@@ -119,7 +174,7 @@ class Solver:
         for load in loads:
             nid = load.get('node_id')
             current = load.get('current', 0.0)
-            if nid in id_to_idx:
+            if nid in id_to_idx and valid_node_mask[id_to_idx[nid]]:
                 idx = id_to_idx[nid]
                 I[idx] -= current
                 
@@ -135,32 +190,19 @@ class Solver:
                 G.data[idx] = [1.0]
                 
                 I[idx] = voltage
+
+        # Anchor one node in each excluded component so the full sparse matrix
+        # remains nonsingular.  These reference values are never returned and
+        # therefore cannot contaminate voltage-drop statistics or plots.
+        for idx in floating_representatives:
+            G.rows[idx] = [idx]
+            G.data[idx] = [1.0]
+            I[idx] = 0.0
                 
         # 6. Solve System
         # Convert to CSR for solving efficiency
         G_csr = G.tocsr()
         
-        # Diagnostics: Island Detection
-        try:
-            from scipy.sparse.csgraph import connected_components
-            n_components, labels = connected_components(csgraph=G_csr, directed=False, return_labels=True)
-            
-            if n_components > 1:
-                self._log(f"Detected {n_components} isolated copper islands.")
-                # Check if each island has a source
-                island_has_source = [False] * n_components
-                for source in sources:
-                    idx = id_to_idx.get(source['node_id'])
-                    if idx is not None:
-                        island_has_source[labels[idx]] = True
-                
-                for i, has_src in enumerate(island_has_source):
-                    if not has_src:
-                        n_nodes = np.count_nonzero(labels == i)
-                        self._log(f"  Warning: Island #{i} ({n_nodes} nodes) has no voltage source. Results may be undefined.")
-        except Exception as e:
-            self._log(f"Connectivity diagnostic failed: {e}")
-            
         try:
             if pypardiso is not None:
                 if self.debug: self._log("Using high-performance PyPardiso solver.")
@@ -178,6 +220,8 @@ class Solver:
         # 7. Map results back
         results = {}
         for i, v_val in enumerate(V_solution):
+            if not valid_node_mask[i]:
+                continue
             nid = idx_to_id[i]
             results[nid] = float(v_val)
             

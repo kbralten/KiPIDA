@@ -308,6 +308,9 @@ class TestConfigManager(unittest.TestCase):
             if Path(filepath).exists():
                 os.unlink(filepath)
 
+    def test_thermal_default_allows_relaxed_coupled_convergence(self):
+        self.assertEqual(ThermalAnalysisSettings().coupled_iterations, 10)
+
     def test_legacy_v11_config_migrates_without_thermal_profile(self):
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
             filepath = f.name

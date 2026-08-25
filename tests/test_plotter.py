@@ -65,6 +65,12 @@ class TestPlotter(unittest.TestCase):
         bmp = self.plotter.plot_layer_2d(self.mesh, 99, self.stackup)
         self.assertIsNone(bmp)
 
+    def test_plot_excludes_nodes_without_valid_voltage(self):
+        self.mesh.results = {0: 3.3, 1: 3.2}
+
+        self.assertIsNotNone(self.plotter.plot_3d_mesh(self.mesh, self.stackup))
+        self.assertIsNone(self.plotter.plot_layer_2d(self.mesh, 1, self.stackup))
+
     def test_plot_impedance_sweep(self):
         baseline = SimpleNamespace(
             frequencies_hz=[1e3, 1e4, 1e5],

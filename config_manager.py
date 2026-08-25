@@ -337,7 +337,7 @@ def _dict_to_thermal_settings(data: dict) -> ThermalAnalysisSettings:
         include_radiation=bool(data.get("include_radiation", True)),
         emissivity=float(data.get("emissivity", 0.9)),
         include_dc_copper_losses=bool(data.get("include_dc_copper_losses", True)),
-        coupled_iterations=int(data.get("coupled_iterations", 6)),
+        coupled_iterations=int(data.get("coupled_iterations", 10)),
         convergence_c=float(data.get("convergence_c", 0.1)),
         relaxation=float(data.get("relaxation", 0.6)),
         copper_temp_coefficient_per_c=float(data.get("copper_temp_coefficient_per_c", 0.00393)),

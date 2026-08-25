@@ -39,10 +39,16 @@ class Plotter:
                 return None
 
             for nid, (x, y, layer) in mesh.node_coords.items():
+                if has_results and nid not in mesh.results:
+                    continue
                 xs.append(x)
                 ys.append(-y)  # Invert Y to match KiCad
                 zs.append(layer_to_z.get(layer, 10 - layer * 0.5))
                 c.append(mesh.results.get(nid, 0.0) if has_results else layer)
+
+            if not xs:
+                plt.close(fig)
+                return None
                 
             sc = ax.scatter(xs, ys, zs, c=c, cmap='viridis', vmin=vmin, vmax=vmax)
             if has_results:
@@ -78,7 +84,11 @@ class Plotter:
             has_results = hasattr(mesh, 'results') and mesh.results
             
             # Filter nodes for this layer
-            nodes_on_layer = [nid for nid in mesh.nodes if mesh.node_coords[nid][2] == layer_id]
+            nodes_on_layer = [
+                nid for nid in mesh.nodes
+                if mesh.node_coords[nid][2] == layer_id
+                and (not has_results or nid in mesh.results)
+            ]
             
             if not nodes_on_layer:
                 plt.close(fig)
