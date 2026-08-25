@@ -204,6 +204,113 @@ class Plotter:
                 print(f"Thermal surface plot error: {e}")
             return None
 
+    def _cfd_field(self, mesh, result, field):
+        shape = mesh.shape
+        field = field.upper()
+        if field == 'PRESSURE':
+            return np.asarray(result.pressure_pa, dtype=float).reshape(shape), 'Pressure (Pa)', 'coolwarm'
+        if field == 'VELOCITY':
+            u = np.asarray(result.velocity_u_m_s, dtype=float).reshape(shape)
+            v = np.asarray(result.velocity_v_m_s, dtype=float).reshape(shape)
+            w = np.asarray(result.velocity_w_m_s, dtype=float).reshape(shape)
+            return np.sqrt(u * u + v * v + w * w), 'Velocity (m/s)', 'viridis'
+        values = np.asarray(result.air_temperature_c, dtype=float).reshape(shape)
+        solids = np.asarray(result.solid_temperature_c, dtype=float).reshape(shape)
+        values = np.where(np.isfinite(solids), solids, values)
+        return values, 'Temperature (C)', 'inferno'
+
+    def plot_cfd_slice(self, mesh, result, field='TEMPERATURE', plane='XY'):
+        """Render a central scalar slice with in-plane velocity vectors."""
+        try:
+            values, label, cmap = self._cfd_field(mesh, result, field)
+            shape = mesh.shape
+            plane = plane.upper()
+            u = np.asarray(result.velocity_u_m_s, dtype=float).reshape(shape)
+            v = np.asarray(result.velocity_v_m_s, dtype=float).reshape(shape)
+            w = np.asarray(result.velocity_w_m_s, dtype=float).reshape(shape)
+            if plane == 'XZ':
+                index = shape[1] // 2
+                image_values = values[:, index, :].T
+                vector_a, vector_b = u[:, index, :].T, w[:, index, :].T
+                extent = (0, mesh.dimensions_m[0] * 1000, 0, mesh.dimensions_m[2] * 1000)
+                axes = ('X (mm)', 'Z (mm)')
+            elif plane == 'YZ':
+                index = shape[0] // 2
+                image_values = values[index, :, :].T
+                vector_a, vector_b = v[index, :, :].T, w[index, :, :].T
+                extent = (0, mesh.dimensions_m[1] * 1000, 0, mesh.dimensions_m[2] * 1000)
+                axes = ('Y (mm)', 'Z (mm)')
+            else:
+                index = shape[2] // 2
+                image_values = values[:, :, index].T
+                vector_a, vector_b = u[:, :, index].T, v[:, :, index].T
+                extent = (0, mesh.dimensions_m[0] * 1000, 0, mesh.dimensions_m[1] * 1000)
+                axes = ('X (mm)', 'Y (mm)')
+            fig, axis = plt.subplots(figsize=(8, 5), constrained_layout=True)
+            image_plot = axis.imshow(
+                np.ma.masked_invalid(image_values), origin='lower', extent=extent,
+                aspect='auto', cmap=cmap,
+            )
+            stride = max(1, int(max(image_values.shape) / 20))
+            x = np.linspace(extent[0], extent[1], image_values.shape[1])
+            y = np.linspace(extent[2], extent[3], image_values.shape[0])
+            axis.quiver(
+                x[::stride], y[::stride],
+                vector_a[::stride, ::stride], vector_b[::stride, ::stride],
+                color='white', alpha=0.65, scale=None,
+            )
+            axis.set_xlabel(axes[0]); axis.set_ylabel(axes[1])
+            axis.set_title(f'Enclosure CFD {field.title()} - {plane} slice')
+            fig.colorbar(image_plot, ax=axis, label=label)
+            return self._fig_to_bitmap(fig)
+        except Exception as exc:
+            if self.debug:
+                print(f"CFD slice plot error: {exc}")
+            return None
+
+    def plot_cfd_3d(self, mesh, result):
+        """Render a down-sampled 3D air/solid temperature field."""
+        try:
+            values, label, cmap = self._cfd_field(mesh, result, 'TEMPERATURE')
+            indices = np.argwhere(np.isfinite(values))
+            if len(indices) > 40000:
+                indices = indices[::int(np.ceil(len(indices) / 40000.0))]
+            dx, dy, dz = mesh.spacing_m
+            coords = (indices + 0.5) * np.asarray([dx, dy, dz]) * 1000.0
+            colors = values[tuple(indices.T)]
+            fig = plt.figure(figsize=(8, 6), constrained_layout=True)
+            axis = fig.add_subplot(111, projection='3d')
+            scatter = axis.scatter(coords[:, 0], coords[:, 1], coords[:, 2], c=colors,
+                                   cmap=cmap, s=4, alpha=0.45)
+            axis.set_xlabel('X (mm)'); axis.set_ylabel('Y (mm)'); axis.set_zlabel('Z (mm)')
+            axis.set_title('Enclosure CFD volumetric temperature')
+            fig.colorbar(scatter, ax=axis, label=label, shrink=0.75)
+            return self._fig_to_bitmap(fig)
+        except Exception as exc:
+            if self.debug:
+                print(f"CFD 3D plot error: {exc}")
+            return None
+
+    def plot_cfd_residuals(self, result):
+        try:
+            fig, axis = plt.subplots(figsize=(8, 5), constrained_layout=True)
+            for label, values in (
+                ('Continuity', result.residuals.continuity),
+                ('Momentum', result.residuals.momentum),
+                ('Energy', result.residuals.energy),
+            ):
+                finite = np.asarray(values, dtype=float)
+                finite = np.where(np.isfinite(finite), finite, np.nan)
+                axis.semilogy(np.arange(1, len(finite) + 1), np.maximum(finite, 1e-16), label=label)
+            axis.set_xlabel('Iteration'); axis.set_ylabel('Residual')
+            axis.set_title('Enclosure CFD convergence')
+            axis.grid(True, which='both', alpha=0.3); axis.legend()
+            return self._fig_to_bitmap(fig)
+        except Exception as exc:
+            if self.debug:
+                print(f"CFD residual plot error: {exc}")
+            return None
+
     def _fig_to_bitmap(self, fig):
         buf = io.BytesIO()
         fig.savefig(buf, format='png', dpi=100)

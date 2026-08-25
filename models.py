@@ -141,6 +141,7 @@ class ProjectConfig:
     rails: List[PowerRail] = field(default_factory=list)
     ac_profiles: Dict[str, ACAnalysisSettings] = field(default_factory=dict)
     thermal_profile: Optional["ThermalAnalysisSettings"] = None
+    cfd_profile: Optional["EnclosureCFDSettings"] = None
 
 
 @dataclass
@@ -259,6 +260,99 @@ class ElectroThermalResult:
     dc_results: Dict[str, DCSolveResult] = field(default_factory=dict)
     iterations: int = 1
     converged: bool = True
+
+
+@dataclass
+class FluidProperties:
+    """Air properties used by the enclosure CFD solver (SI units)."""
+    density_kg_m3: float = 1.184
+    dynamic_viscosity_pa_s: float = 1.85e-5
+    heat_capacity_j_kgk: float = 1007.0
+    conductivity_w_mk: float = 0.0262
+    thermal_expansion_per_k: float = 0.00335
+
+
+@dataclass
+class CFDBoundaryPatch:
+    """Rectangular boundary patch on one of the six enclosure faces."""
+    name: str
+    kind: str = "VENT"  # WALL, INLET, OUTLET, VENT, FAN
+    face: str = "XMIN"  # XMIN/XMAX/YMIN/YMAX/ZMIN/ZMAX
+    center_u: float = 0.5
+    center_v: float = 0.5
+    size_u: float = 0.25
+    size_v: float = 0.25
+    velocity_m_s: float = 0.0
+    temperature_c: float = 25.0
+    pressure_pa: float = 0.0
+
+
+@dataclass
+class EnclosureGeometrySettings:
+    """Axis-aligned enclosure and PCB placement settings."""
+    width_mm: float = 120.0
+    depth_mm: float = 100.0
+    height_mm: float = 50.0
+    board_orientation: str = "XY"  # XY, XZ, YZ
+    board_offset_x_mm: float = 0.0
+    board_offset_y_mm: float = 0.0
+    board_offset_z_mm: float = 15.0
+    wall_heat_transfer_w_m2k: float = 5.0
+
+
+@dataclass
+class CFDSolverSettings:
+    """Numerical controls for steady incompressible enclosure flow."""
+    cell_size_mm: float = 5.0
+    max_iterations: int = 250
+    tolerance: float = 1.0e-4
+    relaxation: float = 0.45
+    pseudo_time_step_s: float = 0.02
+    pressure_iterations: int = 60
+    include_buoyancy: bool = True
+    gravity_x_m_s2: float = 0.0
+    gravity_y_m_s2: float = 0.0
+    gravity_z_m_s2: float = -9.81
+    max_cells: int = 250000
+
+
+@dataclass
+class EnclosureCFDSettings:
+    """Persisted Phase 4 enclosure, fluid, boundary, and solver settings."""
+    ambient_c: float = 25.0
+    geometry: EnclosureGeometrySettings = field(default_factory=EnclosureGeometrySettings)
+    fluid: FluidProperties = field(default_factory=FluidProperties)
+    solver: CFDSolverSettings = field(default_factory=CFDSolverSettings)
+    patches: List[CFDBoundaryPatch] = field(default_factory=list)
+    use_phase3_heat_sources: bool = True
+    include_dc_copper_losses: bool = True
+
+
+@dataclass
+class CFDResidualHistory:
+    continuity: List[float] = field(default_factory=list)
+    momentum: List[float] = field(default_factory=list)
+    energy: List[float] = field(default_factory=list)
+
+
+@dataclass
+class EnclosureCFDResult:
+    """Volumetric CFD fields and conservation diagnostics."""
+    pressure_pa: List[float] = field(default_factory=list)
+    velocity_u_m_s: List[float] = field(default_factory=list)
+    velocity_v_m_s: List[float] = field(default_factory=list)
+    velocity_w_m_s: List[float] = field(default_factory=list)
+    air_temperature_c: List[float] = field(default_factory=list)
+    solid_temperature_c: List[float] = field(default_factory=list)
+    residuals: CFDResidualHistory = field(default_factory=CFDResidualHistory)
+    iterations: int = 0
+    converged: bool = False
+    mass_balance_error_pct: float = 0.0
+    energy_balance_error_pct: float = 0.0
+    maximum_velocity_m_s: float = 0.0
+    maximum_air_temperature_c: float = 0.0
+    maximum_solid_temperature_c: float = 0.0
+    total_heat_w: float = 0.0
 
 def generate_regulator_name(input_ref_des: str, output_ref_des: str, output_rail_name: str = "") -> str:
     """
