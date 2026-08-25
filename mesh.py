@@ -2,6 +2,11 @@
 import sys
 import math
 
+try:
+    from .models import MeshBranch
+except (ImportError, ValueError):
+    from models import MeshBranch
+
 # Use explicit check if needed, but we assume kipy objects are passed
 def to_mm(val):
     return val / 1e6
@@ -30,9 +35,21 @@ class Mesh:
         self.G_coo_row = []
         self.G_coo_col = []
         self.G_final_csr = None # To be filled by solver or mesher if configured
+        self.branches = [] # List[MeshBranch], retained for AC analysis
         
-    def add_edge_direct(self, u, v, g):
+    def add_edge_direct(self, u, v, g, inductance_h=0.0, kind="lateral"):
         """Adds an edge directly to the sparse data arrays."""
+        if g <= 0:
+            return
+
+        self.branches.append(MeshBranch(
+            node_a=int(u),
+            node_b=int(v),
+            resistance_ohm=1.0 / float(g),
+            inductance_h=max(0.0, float(inductance_h)),
+            kind=kind,
+        ))
+
         # G[u,u] += g
         self.G_coo_row.append(u)
         self.G_coo_col.append(u)
@@ -239,6 +256,7 @@ class Mesher:
                 thick = copper_info.get('thickness_mm', 0.035)
                 rho = stackup.get('resistivity', 1.7e-5)
                 g_lat_val = thick / rho
+                l_lat_val = self._estimate_lateral_l(lid, stackup)
                 
                 # Horizontal Neighbors (x, y) <-> (x+1, y)
                 # Check where node and right-neighbor both exist
@@ -256,7 +274,7 @@ class Mesher:
                     v_ids = node_grid[layer_map[lid], y_r, x_r + 1]
                     
                     for u, v in zip(u_ids, v_ids):
-                         mesh.add_edge_direct(u, v, g_lat_val)
+                         mesh.add_edge_direct(u, v, g_lat_val, l_lat_val, "lateral")
                 
                 # Vertical (Top) Neighbors (x, y) <-> (x, y+1)
                 top_mask = mask_2d[:-1, :] & mask_2d[1:, :]
@@ -268,7 +286,7 @@ class Mesher:
                     v_ids = node_grid[layer_map[lid], y_t + 1, x_t]
                     
                     for u, v in zip(u_ids, v_ids):
-                         mesh.add_edge_direct(u, v, g_lat_val)
+                         mesh.add_edge_direct(u, v, g_lat_val, l_lat_val, "lateral")
 
             if self.debug:
                 self._log(f"  Layer {lid} vectorized mesh: {count_on_layer} nodes.")
@@ -369,6 +387,41 @@ class Mesher:
         if h <= 0: h = 0.5 
         return area / (rho * h)
 
+    def _estimate_lateral_l(self, layer, stackup):
+        """Estimate per-square spreading inductance to the nearest return plane.
+
+        This quasi-static approximation intentionally avoids claiming full-wave
+        accuracy.  It gives the AC solver a stackup-sensitive loop inductance
+        while keeping the existing 2.5D mesh topology.
+        """
+        distances_mm = []
+        for sub in stackup.get('substrate', []):
+            between = sub.get('between', [])
+            if layer in between:
+                thickness = float(sub.get('thickness_mm', 0.0) or 0.0)
+                if thickness > 0:
+                    distances_mm.append(thickness)
+
+        return 4.0e-7 * math.pi * (min(distances_mm) if distances_mm else 0.2) * 1.0e-3
+
+    def _calculate_vertical_l(self, layer_a, layer_b, stackup, diameter_mm):
+        """Estimate via/PTH inductance from traversed dielectric height."""
+        l_min, l_max = min(layer_a, layer_b), max(layer_a, layer_b)
+        height_mm = 0.0
+        for sub in stackup.get('substrate', []):
+            between = sub.get('between', [])
+            if len(between) != 2 or between[0] is None or between[1] is None:
+                continue
+            if min(between) >= l_min and max(between) <= l_max:
+                height_mm += float(sub.get('thickness_mm', 0.0) or 0.0)
+
+        if height_mm <= 0:
+            height_mm = 0.5
+
+        # A conservative engineering estimate for a plated through connection.
+        diameter_factor = max(0.5, min(2.0, 0.3 / max(diameter_mm, 0.05)))
+        return max(0.05e-9, height_mm * diameter_factor * 1.0e-9)
+
     def _get_best_node_in_radius(self, mesh, x_mm, y_mm, layer, radius_mm):
         """Find a node for the via/pad on the given layer."""
         ix_center = int(round((x_mm - mesh.grid_origin[0]) / mesh.grid_step))
@@ -447,7 +500,8 @@ class Mesher:
             la = mesh.node_coords[nid_a][2]
             lb = mesh.node_coords[nid_b][2]
             g_via = self._calculate_vertical_g(la, lb, stackup, dia_mm)
-            mesh.add_edge_direct(nid_a, nid_b, g_via)
+            l_via = self._calculate_vertical_l(la, lb, stackup, dia_mm)
+            mesh.add_edge_direct(nid_a, nid_b, g_via, l_via, "via")
 
     def _add_vertical_stack(self, mesh, pos, layers, diameter, stackup):
         if layers is None or len(layers) == 0:
@@ -470,6 +524,7 @@ class Mesher:
             la = mesh.node_coords[nid_a][2]
             lb = mesh.node_coords[nid_b][2]
             g_via = self._calculate_vertical_g(la, lb, stackup, diameter)
-            mesh.add_edge_direct(nid_a, nid_b, g_via)
+            l_via = self._calculate_vertical_l(la, lb, stackup, diameter)
+            mesh.add_edge_direct(nid_a, nid_b, g_via, l_via, "pth")
 
 

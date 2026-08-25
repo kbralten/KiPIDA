@@ -3,11 +3,20 @@ from typing import List, Optional, Union
 from pathlib import Path
 
 try:
-    from .models import PowerRail, UnifiedSource, UnifiedLoad, VoltageRegulator, ComponentRef
+    from .models import (
+        ACAnalysisSettings, ACMeasurementPort, ACSourceModel, CapacitorModel,
+        ComponentRef, PowerRail, ProjectConfig, UnifiedLoad, UnifiedSource,
+        VoltageRegulator,
+    )
 except (ImportError, ValueError):
-    from models import PowerRail, UnifiedSource, UnifiedLoad, VoltageRegulator, ComponentRef
+    from models import (
+        ACAnalysisSettings, ACMeasurementPort, ACSourceModel, CapacitorModel,
+        ComponentRef, PowerRail, ProjectConfig, UnifiedLoad, UnifiedSource,
+        VoltageRegulator,
+    )
 
-CONFIG_VERSION = "1.0"
+CONFIG_VERSION = "1.1"
+SUPPORTED_CONFIG_VERSIONS = {"1.0", CONFIG_VERSION}
 
 
 def get_project_config_path(
@@ -32,36 +41,22 @@ def get_project_config_path(
 
     return directory / f"{config_stem}.kipida.json"
 
-def save_config(rails: List[PowerRail], filepath: str):
-    """
-    Save power network configuration to JSON file.
-    
-    Args:
-        rails: List of PowerRail objects to serialize
-        filepath: Path to save JSON file
-    """
+def save_config(rails: List[PowerRail], filepath: str, ac_profiles=None):
+    """Save the power tree and optional AC profiles to a JSON sidecar."""
     config = {
         "version": CONFIG_VERSION,
-        "rails": [_rail_to_dict(rail) for rail in rails]
+        "rails": [_rail_to_dict(rail) for rail in rails],
+        "ac_profiles": {
+            name: _ac_settings_to_dict(settings)
+            for name, settings in (ac_profiles or {}).items()
+        },
     }
     
     with open(filepath, 'w') as f:
         json.dump(config, f, indent=2)
 
-def load_config(filepath: str) -> List[PowerRail]:
-    """
-    Load power network configuration from JSON file.
-    
-    Args:
-        filepath: Path to JSON config file
-        
-    Returns:
-        List of PowerRail objects
-        
-    Raises:
-        FileNotFoundError: If config file doesn't exist
-        ValueError: If config file is invalid
-    """
+def load_project_config(filepath: str) -> ProjectConfig:
+    """Load the complete project configuration, including legacy v1.0 files."""
     if not Path(filepath).exists():
         raise FileNotFoundError(f"Config file not found: {filepath}")
     
@@ -70,12 +65,24 @@ def load_config(filepath: str) -> List[PowerRail]:
     
     # Validate version
     version = config.get("version", "unknown")
-    if version != CONFIG_VERSION:
+    if version not in SUPPORTED_CONFIG_VERSIONS:
         raise ValueError(f"Unsupported config version: {version}")
     
-    # Deserialize rails
     rails = [_dict_to_rail(rail_dict) for rail_dict in config.get("rails", [])]
-    return rails
+    ac_profiles = {
+        name: _dict_to_ac_settings(settings)
+        for name, settings in config.get("ac_profiles", {}).items()
+    }
+    return ProjectConfig(rails=rails, ac_profiles=ac_profiles)
+
+
+def load_config(filepath: str) -> List[PowerRail]:
+    """Backward-compatible rail-only loader."""
+    return load_project_config(filepath).rails
+
+
+def load_ac_profiles(filepath: str):
+    return load_project_config(filepath).ac_profiles
 
 def _rail_to_dict(rail: PowerRail) -> dict:
     """Convert PowerRail to dictionary."""
@@ -166,4 +173,80 @@ def _dict_to_regulator(data: dict) -> VoltageRegulator:
         output_pad_names=data.get("output_pad_names", []),
         reg_type=data.get("reg_type", "LINEAR"),
         efficiency=data.get("efficiency", 0.85)
+    )
+
+
+def _ac_settings_to_dict(settings: ACAnalysisSettings) -> dict:
+    return {
+        "rail_name": settings.rail_name,
+        "ground_net_name": settings.ground_net_name,
+        "frequency_start_hz": settings.frequency_start_hz,
+        "frequency_stop_hz": settings.frequency_stop_hz,
+        "frequency_points": settings.frequency_points,
+        "target_impedance_ohm": settings.target_impedance_ohm,
+        "source": {
+            "ref_des": settings.source.ref_des,
+            "rail_pad_names": settings.source.rail_pad_names,
+            "ground_pad_names": settings.source.ground_pad_names,
+            "resistance_ohm": settings.source.resistance_ohm,
+            "inductance_h": settings.source.inductance_h,
+        },
+        "measurement_port": {
+            "ref_des": settings.measurement_port.ref_des,
+            "rail_pad_names": settings.measurement_port.rail_pad_names,
+            "ground_pad_names": settings.measurement_port.ground_pad_names,
+        },
+        "capacitors": [{
+            "ref_des": cap.ref_des,
+            "rail_pad_names": cap.rail_pad_names,
+            "ground_pad_names": cap.ground_pad_names,
+            "capacitance_f": cap.capacitance_f,
+            "esr_ohm": cap.esr_ohm,
+            "esl_h": cap.esl_h,
+            "enabled": cap.enabled,
+            "candidate": cap.candidate,
+            "model_source": cap.model_source,
+        } for cap in settings.capacitors],
+        "optimizer_values_f": settings.optimizer_values_f,
+        "optimizer_max_additions": settings.optimizer_max_additions,
+    }
+
+
+def _dict_to_ac_settings(data: dict) -> ACAnalysisSettings:
+    source_data = data.get("source", {})
+    port_data = data.get("measurement_port", {})
+    return ACAnalysisSettings(
+        rail_name=data.get("rail_name", ""),
+        ground_net_name=data.get("ground_net_name", "GND"),
+        frequency_start_hz=float(data.get("frequency_start_hz", 1e3)),
+        frequency_stop_hz=float(data.get("frequency_stop_hz", 1e8)),
+        frequency_points=int(data.get("frequency_points", 121)),
+        target_impedance_ohm=float(data.get("target_impedance_ohm", 0.05)),
+        source=ACSourceModel(
+            ref_des=source_data.get("ref_des", ""),
+            rail_pad_names=source_data.get("rail_pad_names", []),
+            ground_pad_names=source_data.get("ground_pad_names", []),
+            resistance_ohm=float(source_data.get("resistance_ohm", 0.01)),
+            inductance_h=float(source_data.get("inductance_h", 1e-9)),
+        ),
+        measurement_port=ACMeasurementPort(
+            ref_des=port_data.get("ref_des", ""),
+            rail_pad_names=port_data.get("rail_pad_names", []),
+            ground_pad_names=port_data.get("ground_pad_names", []),
+        ),
+        capacitors=[CapacitorModel(
+            ref_des=cap["ref_des"],
+            rail_pad_names=cap.get("rail_pad_names", []),
+            ground_pad_names=cap.get("ground_pad_names", []),
+            capacitance_f=float(cap.get("capacitance_f", 0.0)),
+            esr_ohm=float(cap.get("esr_ohm", 0.01)),
+            esl_h=float(cap.get("esl_h", 0.8e-9)),
+            enabled=bool(cap.get("enabled", True)),
+            candidate=bool(cap.get("candidate", False)),
+            model_source=cap.get("model_source", "estimated"),
+        ) for cap in data.get("capacitors", [])],
+        optimizer_values_f=[float(value) for value in data.get(
+            "optimizer_values_f", [10e-9, 47e-9, 100e-9, 470e-9, 1e-6, 4.7e-6, 10e-6]
+        )],
+        optimizer_max_additions=int(data.get("optimizer_max_additions", 8)),
     )
