@@ -109,5 +109,36 @@ class TestPlotter(unittest.TestCase):
         self.assertIsNotNone(self.plotter.plot_thermal_surface(thermal_mesh, result, side="TOP"))
         self.assertIsNotNone(self.plotter.plot_thermal_surface(thermal_mesh, result, side="BOTTOM"))
 
+    def test_plot_cfd_views(self):
+        shape = (3, 3, 3)
+        count = 27
+        cfd_mesh = SimpleNamespace(
+            shape=shape,
+            spacing_m=(0.01, 0.01, 0.01),
+            dimensions_m=(0.03, 0.03, 0.03),
+        )
+        air = [25.0 + index / 100.0 for index in range(count)]
+        solid = [float('nan')] * count
+        solid[13] = 31.0
+        result = SimpleNamespace(
+            pressure_pa=[0.1 * index for index in range(count)],
+            velocity_u_m_s=[0.2] * count,
+            velocity_v_m_s=[0.0] * count,
+            velocity_w_m_s=[0.01] * count,
+            air_temperature_c=air,
+            solid_temperature_c=solid,
+            residuals=SimpleNamespace(
+                continuity=[1.0, 0.1, 0.01],
+                momentum=[0.5, 0.05, 0.005],
+                energy=[2.0, 0.2, 0.02],
+            ),
+        )
+
+        self.assertIsNotNone(self.plotter.plot_cfd_3d(cfd_mesh, result))
+        self.assertIsNotNone(self.plotter.plot_cfd_slice(cfd_mesh, result, "TEMPERATURE", "XY"))
+        self.assertIsNotNone(self.plotter.plot_cfd_slice(cfd_mesh, result, "VELOCITY", "XZ"))
+        self.assertIsNotNone(self.plotter.plot_cfd_slice(cfd_mesh, result, "PRESSURE", "YZ"))
+        self.assertIsNotNone(self.plotter.plot_cfd_residuals(result))
+
 if __name__ == '__main__':
     unittest.main()

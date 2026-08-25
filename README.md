@@ -1,6 +1,6 @@
 # Ki-PIDA (KiCad Power Integrity & Delivery Analyzer)
 
-Ki-PIDA is a native KiCad plugin for DC, AC, and thermal Power Integrity (PI) analysis. It allows PCB designers to simulate voltage drops (IR drop), current densities, rail-to-ground impedance, and steady-state 3D board temperatures directly within the KiCad Pcbnew environment, eliminating complex external workflows.
+Ki-PIDA is a native KiCad plugin for DC, AC, thermal, and enclosure-airflow Power Integrity (PI) analysis. It allows PCB designers to simulate voltage drops (IR drop), current densities, rail-to-ground impedance, steady-state 3D board temperatures, and enclosure airflow directly within the KiCad Pcbnew environment, eliminating complex external workflows.
 
 ## 🚀 Why Ki-PIDA?
 
@@ -25,6 +25,8 @@ Ki-PIDA democratizes high-end PI analysis by:
 - **3D Thermal Model:** Solve through-stack and lateral heat conduction using the extracted PCB stackup, spatial copper coverage, and thermal vias.
 - **Airflow Convection:** Configure natural, forced, or custom heat-transfer coefficients with exposed top, bottom, and edge surfaces.
 - **Electro-Thermal Coupling:** Iterate DC copper loss and temperature-dependent copper resistance until the configured convergence threshold is reached.
+- **Volumetric Enclosure CFD:** Solve steady laminar airflow, pressure, and temperature on a structured 3D enclosure mesh with Boussinesq buoyancy.
+- **Conjugate Heat Transfer:** Map Phase 3 PCB/component/copper losses into solid obstacles coupled directly to the enclosure air-energy equation.
 
 ## 📦 Installation
 
@@ -127,6 +129,19 @@ The optimizer is intentionally non-destructive: it reports footprint/value recom
 
 The airflow model applies convective boundary conditions to the 3D solid board mesh. It is intended for board-level design comparison and hotspot screening; it is not a volumetric CFD enclosure or fan model. Component junction temperatures use the configured compact `theta-JB` estimate and therefore require engineering review before sign-off.
 
+## Tutorial: Enclosure CFD and Conjugate Heat Transfer
+
+1. Configure component powers in **3D Thermal**, then open **Enclosure CFD**.
+2. Enter the enclosure width, depth, height, PCB orientation/offset, ambient temperature, and external wall heat-transfer coefficient.
+3. Select a CFD cell size. The displayed cell estimate and the built-in maximum-cell guard prevent accidental oversized runs.
+4. Add rectangular boundary patches on any enclosure face. **Fan/INLET** patches prescribe inward velocity and temperature; **OUTLET/VENT** patches provide an exhaust pressure boundary; **WALL** restores a no-slip section. **Add Fan Pair** creates a typical inlet/outlet starting point.
+5. Keep **Use Phase 3 heat sources** enabled to map PCB/component dissipation. **Include DC copper losses** reuses the latest DC branch losses, running DC first when necessary.
+6. Choose **Run Enclosure CFD**. The solve runs on a worker thread; the same button requests cancellation while it is active.
+7. Review maximum air/solid temperature, velocity, mass/energy balance, 3D temperature, central temperature/velocity/pressure slices, and convergence residuals in **Results**.
+8. Save the project configuration to persist the enclosure, fluid, solver, and boundary-patch profile in `<project>.kipida.json`.
+
+The Phase 4 solver is a steady, incompressible, laminar engineering model. It uses a cell-centred projection method, Boussinesq buoyancy, finite-volume advection/diffusion, and a unified sparse solid-air energy solve. Fans are boundary-flow patches rather than rotating blade geometry. Turbulence, radiation, compressibility, leakage, transient fan curves, and certification-grade validation are outside the current scope.
+
 ## 🛠️ Technical Overview (For Developers)
 
 Ki-PIDA is built on a modular architecture designed for performance and maintainability.
@@ -142,10 +157,14 @@ Ki-PIDA is built on a modular architecture designed for performance and maintain
 - **Thermal Mesh (`thermal_mesh.py`):** Builds a finite-volume 3D solid mesh with anisotropic FR-4, spatial copper conductivity, thermal-via branches, radiation, and convective surface boundaries.
 - **Thermal Solver (`thermal_solver.py`):** Solves the sparse steady-state heat equation and reports hotspot, component junction estimates, and energy balance.
 - **Electro-Thermal Solver (`electrothermal.py`):** Iterates DC branch resistance and loss with the solved copper temperature field.
+- **Enclosure Model (`cfd_model.py`):** Places the extracted PCB and compact component solids inside an axis-aligned enclosure and maps Phase 3 heat sources.
+- **CFD Mesh (`cfd_mesh.py`):** Builds the bounded structured volumetric grid, solid/fluid masks, heat distribution, and rectangular face patches.
+- **CFD Solver (`cfd_solver.py`):** Solves steady laminar momentum/pressure with buoyancy and sparse conjugate solid-air energy, reporting conservation diagnostics and residual histories.
+- **CHT Orchestrator (`conjugate_heat_transfer.py`):** Coordinates enclosure construction, volumetric meshing, and the CFD/thermal solve.
 - **Visualizer (`visualizer.py`):** Generates heatmaps via Matplotlib and renders them as overlays in KiCad.
 
 ### Methodology
-Electrical analysis utilizes a **Hybrid 2.5D Finite Difference Method (FDM)**. It represents PCB layers as 2D grids connected vertically by via/PTH elements. DC analysis uses resistive branches; AC analysis retains the same topology and adds stackup-sensitive branch inductance plus lumped source/capacitor RLC models. Thermal analysis uses a separate **3D finite-volume solid-conduction model** through the physical stackup. This is a board-level engineering model, not a full-wave electromagnetic solver or volumetric CFD solver.
+Electrical analysis utilizes a **Hybrid 2.5D Finite Difference Method (FDM)**. It represents PCB layers as 2D grids connected vertically by via/PTH elements. DC analysis uses resistive branches; AC analysis retains the same topology and adds stackup-sensitive branch inductance plus lumped source/capacitor RLC models. Phase 3 thermal analysis uses a separate **3D finite-volume solid-conduction model** through the physical stackup. Phase 4 adds a structured volumetric enclosure grid, steady incompressible projection flow, Boussinesq buoyancy, and conjugate solid-air energy. These are engineering models, not full-wave electromagnetic, turbulent RANS/LES, or rotating-fan solvers.
 
 ### Stack
 - **Languages:** Python 3.9+
@@ -155,7 +174,7 @@ Electrical analysis utilizes a **Hybrid 2.5D Finite Difference Method (FDM)**. I
 
 ## � Current State (Alpha)
 
-As of the current version, Ki-PIDA implements end-to-end DC IR drop, AC target-impedance, and steady-state 3D thermal analysis.
+As of the current version, Ki-PIDA implements end-to-end DC IR drop, AC target-impedance, steady-state 3D board thermal analysis, and volumetric enclosure CFD.
 
 ### Capabilities:
 - **Comprehensive Extraction:** Extracts tracks, pads, and filled zones (respecting thermal reliefs and voids) from KiCad 9.0+ boards.
@@ -166,6 +185,7 @@ As of the current version, Ki-PIDA implements end-to-end DC IR drop, AC target-i
 - **Deterministic Decoupling Search:** Recommends values for existing DNP/candidate footprints without editing the board.
 - **Thermal and Airflow Solve:** Models 3D board conduction, natural/forced/custom convection, radiation, vias, and component heat sources.
 - **Coupled Iteration:** Feeds branch-level DC `I²R` losses into the thermal solve and updates copper resistance with temperature.
+- **Enclosure CFD:** Resolves 3D air velocity, gauge pressure, air/solid temperature, and natural or prescribed forced convection with mass/energy diagnostics.
 
 ### User Experience:
 - **Automated Rail Discovery:** Instantly find power nets based on zone connectivity.
@@ -176,4 +196,5 @@ As of the current version, Ki-PIDA implements end-to-end DC IR drop, AC target-i
 
 - **Phase 1:** DC IR Drop, basic thermal checks, and power tree UI.
 - **Phase 2:** AC Impedance Analysis ($Z$ vs Frequency) and decoupling capacitor optimization.
-- **Phase 3 (Current):** Full 3D board thermal modeling with airflow convection and iterative DC coupling.
+- **Phase 3:** Full 3D board thermal modeling with airflow convection and iterative DC coupling.
+- **Phase 4 (Current):** Volumetric enclosure CFD with boundary-patch fans/vents and conjugate PCB-to-air heat transfer.

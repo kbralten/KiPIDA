@@ -5,20 +5,24 @@ from pathlib import Path
 try:
     from .models import (
         ACAnalysisSettings, ACMeasurementPort, ACSourceModel, CapacitorModel,
-        AirflowSettings, ComponentRef, PowerRail, ProjectConfig,
+        AirflowSettings, CFDBoundaryPatch, CFDSolverSettings, ComponentRef,
+        EnclosureCFDSettings, EnclosureGeometrySettings, FluidProperties,
+        PowerRail, ProjectConfig,
         ThermalAnalysisSettings, ThermalComponentModel, UnifiedLoad,
         UnifiedSource, VoltageRegulator,
     )
 except (ImportError, ValueError):
     from models import (
         ACAnalysisSettings, ACMeasurementPort, ACSourceModel, CapacitorModel,
-        AirflowSettings, ComponentRef, PowerRail, ProjectConfig,
+        AirflowSettings, CFDBoundaryPatch, CFDSolverSettings, ComponentRef,
+        EnclosureCFDSettings, EnclosureGeometrySettings, FluidProperties,
+        PowerRail, ProjectConfig,
         ThermalAnalysisSettings, ThermalComponentModel, UnifiedLoad,
         UnifiedSource, VoltageRegulator,
     )
 
-CONFIG_VERSION = "1.2"
-SUPPORTED_CONFIG_VERSIONS = {"1.0", "1.1", CONFIG_VERSION}
+CONFIG_VERSION = "1.3"
+SUPPORTED_CONFIG_VERSIONS = {"1.0", "1.1", "1.2", CONFIG_VERSION}
 
 
 def get_project_config_path(
@@ -43,8 +47,11 @@ def get_project_config_path(
 
     return directory / f"{config_stem}.kipida.json"
 
-def save_config(rails: List[PowerRail], filepath: str, ac_profiles=None, thermal_profile=None):
-    """Save the power tree and optional AC/thermal profiles to a JSON sidecar."""
+def save_config(
+    rails: List[PowerRail], filepath: str, ac_profiles=None,
+    thermal_profile=None, cfd_profile=None,
+):
+    """Save the power tree and optional AC, thermal, and CFD profiles."""
     config = {
         "version": CONFIG_VERSION,
         "rails": [_rail_to_dict(rail) for rail in rails],
@@ -55,6 +62,7 @@ def save_config(rails: List[PowerRail], filepath: str, ac_profiles=None, thermal
         "thermal_profile": (
             _thermal_settings_to_dict(thermal_profile) if thermal_profile is not None else None
         ),
+        "cfd_profile": _cfd_settings_to_dict(cfd_profile) if cfd_profile is not None else None,
     }
     
     with open(filepath, 'w') as f:
@@ -80,10 +88,13 @@ def load_project_config(filepath: str) -> ProjectConfig:
     }
     thermal_data = config.get("thermal_profile")
     thermal_profile = _dict_to_thermal_settings(thermal_data) if thermal_data else None
+    cfd_data = config.get("cfd_profile")
+    cfd_profile = _dict_to_cfd_settings(cfd_data) if cfd_data else None
     return ProjectConfig(
         rails=rails,
         ac_profiles=ac_profiles,
         thermal_profile=thermal_profile,
+        cfd_profile=cfd_profile,
     )
 
 
@@ -98,6 +109,10 @@ def load_ac_profiles(filepath: str):
 
 def load_thermal_profile(filepath: str):
     return load_project_config(filepath).thermal_profile
+
+
+def load_cfd_profile(filepath: str):
+    return load_project_config(filepath).cfd_profile
 
 def _rail_to_dict(rail: PowerRail) -> dict:
     """Convert PowerRail to dictionary."""
@@ -333,4 +348,112 @@ def _dict_to_thermal_settings(data: dict) -> ThermalAnalysisSettings:
             enabled=bool(component.get("enabled", True)),
             model_source=component.get("model_source", "estimated"),
         ) for component in data.get("components", [])],
+    )
+
+
+def _cfd_settings_to_dict(settings: EnclosureCFDSettings) -> dict:
+    geometry = settings.geometry
+    fluid = settings.fluid
+    solver = settings.solver
+    return {
+        "ambient_c": settings.ambient_c,
+        "geometry": {
+            "width_mm": geometry.width_mm,
+            "depth_mm": geometry.depth_mm,
+            "height_mm": geometry.height_mm,
+            "board_orientation": geometry.board_orientation,
+            "board_offset_x_mm": geometry.board_offset_x_mm,
+            "board_offset_y_mm": geometry.board_offset_y_mm,
+            "board_offset_z_mm": geometry.board_offset_z_mm,
+            "wall_heat_transfer_w_m2k": geometry.wall_heat_transfer_w_m2k,
+        },
+        "fluid": {
+            "density_kg_m3": fluid.density_kg_m3,
+            "dynamic_viscosity_pa_s": fluid.dynamic_viscosity_pa_s,
+            "heat_capacity_j_kgk": fluid.heat_capacity_j_kgk,
+            "conductivity_w_mk": fluid.conductivity_w_mk,
+            "thermal_expansion_per_k": fluid.thermal_expansion_per_k,
+        },
+        "solver": {
+            "cell_size_mm": solver.cell_size_mm,
+            "max_iterations": solver.max_iterations,
+            "tolerance": solver.tolerance,
+            "relaxation": solver.relaxation,
+            "pseudo_time_step_s": solver.pseudo_time_step_s,
+            "pressure_iterations": solver.pressure_iterations,
+            "include_buoyancy": solver.include_buoyancy,
+            "gravity_x_m_s2": solver.gravity_x_m_s2,
+            "gravity_y_m_s2": solver.gravity_y_m_s2,
+            "gravity_z_m_s2": solver.gravity_z_m_s2,
+            "max_cells": solver.max_cells,
+        },
+        "patches": [{
+            "name": patch.name,
+            "kind": patch.kind,
+            "face": patch.face,
+            "center_u": patch.center_u,
+            "center_v": patch.center_v,
+            "size_u": patch.size_u,
+            "size_v": patch.size_v,
+            "velocity_m_s": patch.velocity_m_s,
+            "temperature_c": patch.temperature_c,
+            "pressure_pa": patch.pressure_pa,
+        } for patch in settings.patches],
+        "use_phase3_heat_sources": settings.use_phase3_heat_sources,
+        "include_dc_copper_losses": settings.include_dc_copper_losses,
+    }
+
+
+def _dict_to_cfd_settings(data: dict) -> EnclosureCFDSettings:
+    geometry = data.get("geometry", {})
+    fluid = data.get("fluid", {})
+    solver = data.get("solver", {})
+    return EnclosureCFDSettings(
+        ambient_c=float(data.get("ambient_c", 25.0)),
+        geometry=EnclosureGeometrySettings(
+            width_mm=float(geometry.get("width_mm", 120.0)),
+            depth_mm=float(geometry.get("depth_mm", 100.0)),
+            height_mm=float(geometry.get("height_mm", 50.0)),
+            board_orientation=geometry.get("board_orientation", "XY"),
+            board_offset_x_mm=float(geometry.get("board_offset_x_mm", 0.0)),
+            board_offset_y_mm=float(geometry.get("board_offset_y_mm", 0.0)),
+            board_offset_z_mm=float(geometry.get("board_offset_z_mm", 15.0)),
+            wall_heat_transfer_w_m2k=float(
+                geometry.get("wall_heat_transfer_w_m2k", 5.0)
+            ),
+        ),
+        fluid=FluidProperties(
+            density_kg_m3=float(fluid.get("density_kg_m3", 1.184)),
+            dynamic_viscosity_pa_s=float(fluid.get("dynamic_viscosity_pa_s", 1.85e-5)),
+            heat_capacity_j_kgk=float(fluid.get("heat_capacity_j_kgk", 1007.0)),
+            conductivity_w_mk=float(fluid.get("conductivity_w_mk", 0.0262)),
+            thermal_expansion_per_k=float(fluid.get("thermal_expansion_per_k", 0.00335)),
+        ),
+        solver=CFDSolverSettings(
+            cell_size_mm=float(solver.get("cell_size_mm", 5.0)),
+            max_iterations=int(solver.get("max_iterations", 250)),
+            tolerance=float(solver.get("tolerance", 1e-4)),
+            relaxation=float(solver.get("relaxation", 0.45)),
+            pseudo_time_step_s=float(solver.get("pseudo_time_step_s", 0.02)),
+            pressure_iterations=int(solver.get("pressure_iterations", 60)),
+            include_buoyancy=bool(solver.get("include_buoyancy", True)),
+            gravity_x_m_s2=float(solver.get("gravity_x_m_s2", 0.0)),
+            gravity_y_m_s2=float(solver.get("gravity_y_m_s2", 0.0)),
+            gravity_z_m_s2=float(solver.get("gravity_z_m_s2", -9.81)),
+            max_cells=int(solver.get("max_cells", 250000)),
+        ),
+        patches=[CFDBoundaryPatch(
+            name=patch.get("name", "Patch"),
+            kind=patch.get("kind", "VENT"),
+            face=patch.get("face", "XMIN"),
+            center_u=float(patch.get("center_u", 0.5)),
+            center_v=float(patch.get("center_v", 0.5)),
+            size_u=float(patch.get("size_u", 0.25)),
+            size_v=float(patch.get("size_v", 0.25)),
+            velocity_m_s=float(patch.get("velocity_m_s", 0.0)),
+            temperature_c=float(patch.get("temperature_c", 25.0)),
+            pressure_pa=float(patch.get("pressure_pa", 0.0)),
+        ) for patch in data.get("patches", [])],
+        use_phase3_heat_sources=bool(data.get("use_phase3_heat_sources", True)),
+        include_dc_copper_losses=bool(data.get("include_dc_copper_losses", True)),
     )

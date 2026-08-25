@@ -2,6 +2,7 @@ import wx
 import wx.dataview
 import sys
 import os
+import threading
 
 # Ensure plugin dir is in path to import modules
 plugin_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -14,11 +15,13 @@ from solver import Solver
 from ac_model import ACModelBuilder, format_capacitance
 from ac_solver import ACSolver
 from decoupling_optimizer import DecouplingOptimizer
+from conjugate_heat_transfer import ConjugateHeatTransferSolver
 from electrothermal import ElectroThermalSolver
 from thermal_mesh import ThermalMesher
 from thermal_model import CopperLossPoint, ThermalModelBuilder
 from thermal_solver import ThermalSolver
 from ui.ac_analysis_panel import ACAnalysisPanel
+from ui.cfd_analysis_panel import CFDAnalysisPanel
 from ui.thermal_analysis_panel import ThermalAnalysisPanel
 from ui.power_tree_panel import PowerTreePanel
 from plotter import Plotter
@@ -28,11 +31,13 @@ class KiPIDA_MainDialog(wx.Dialog):
         super(KiPIDA_MainDialog, self).__init__(parent, title="Ki-PIDA: Power Integrity Analyzer", 
                                                 style=wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER)
         
-        self.SetSize((1000, 700))
-        self.SetMinSize((800, 500))
+        self.SetSize((1180, 760))
+        self.SetMinSize((950, 600))
         
         self.board = board_adapter
         self.project = project
+        self._cfd_thread = None
+        self._cfd_cancel_requested = False
         
         self._init_ui()
         self.Center()
@@ -125,12 +130,22 @@ class KiPIDA_MainDialog(wx.Dialog):
         self.power_tree.thermal_profile_provider = self.thermal_panel.get_settings
         self.power_tree.thermal_profile_consumer = self.thermal_panel.set_settings
 
-        # Tab 4: Results
+        # Tab 4: Enclosure CFD Configuration
+        self.tab_cfd = wx.Panel(self.notebook)
+        cfd_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.cfd_panel = CFDAnalysisPanel(self.tab_cfd, log_callback=self.log)
+        cfd_sizer.Add(self.cfd_panel, 1, wx.EXPAND | wx.ALL, 5)
+        self.tab_cfd.SetSizer(cfd_sizer)
+        self.notebook.AddPage(self.tab_cfd, "Enclosure CFD")
+        self.power_tree.cfd_profile_provider = self.cfd_panel.get_settings
+        self.power_tree.cfd_profile_consumer = self.cfd_panel.set_settings
+
+        # Tab 5: Results
         self.tab_results = wx.Panel(self.notebook)
         self._init_results_tab(self.tab_results)
         self.notebook.AddPage(self.tab_results, "Results")
         
-        # Tab 5: Log/Debug
+        # Tab 6: Log/Debug
         self.tab_log = wx.Panel(self.notebook)
         self._init_log_tab(self.tab_log)
         self.notebook.AddPage(self.tab_log, "Log")
@@ -145,6 +160,7 @@ class KiPIDA_MainDialog(wx.Dialog):
         self.btn_optimize = wx.Button(self, label="Optimize Decoupling")
         self.btn_run_thermal = wx.Button(self, label="Run Thermal")
         self.btn_run_coupled = wx.Button(self, label="Run Coupled")
+        self.btn_run_cfd = wx.Button(self, label="Run Enclosure CFD")
         self.btn_cancel = wx.Button(self, wx.ID_CANCEL, "Close")
         
         btn_sizer.AddStretchSpacer()
@@ -153,6 +169,7 @@ class KiPIDA_MainDialog(wx.Dialog):
         btn_sizer.Add(self.btn_optimize, 0, wx.ALL, 5)
         btn_sizer.Add(self.btn_run_thermal, 0, wx.ALL, 5)
         btn_sizer.Add(self.btn_run_coupled, 0, wx.ALL, 5)
+        btn_sizer.Add(self.btn_run_cfd, 0, wx.ALL, 5)
         btn_sizer.Add(self.btn_cancel, 0, wx.ALL, 5)
         
         main_sizer.Add(btn_sizer, 0, wx.EXPAND | wx.ALL, 5)
@@ -165,6 +182,7 @@ class KiPIDA_MainDialog(wx.Dialog):
         self.btn_optimize.Bind(wx.EVT_BUTTON, self.on_optimize_decoupling)
         self.btn_run_thermal.Bind(wx.EVT_BUTTON, self.on_run_thermal)
         self.btn_run_coupled.Bind(wx.EVT_BUTTON, self.on_run_coupled_thermal)
+        self.btn_run_cfd.Bind(wx.EVT_BUTTON, self.on_run_cfd)
         self.btn_cancel.Bind(wx.EVT_BUTTON, self.on_close)
         self.notebook.Bind(wx.EVT_NOTEBOOK_PAGE_CHANGED, self.on_notebook_page_changed)
         
@@ -176,6 +194,8 @@ class KiPIDA_MainDialog(wx.Dialog):
             wx.CallAfter(self.ac_panel.refresh)
         elif event.GetSelection() == 2 and not self.thermal_panel.settings.components:
             wx.CallAfter(self.thermal_panel.refresh_components)
+        elif event.GetSelection() == 3:
+            wx.CallAfter(self.cfd_panel._update_estimate)
         event.Skip()
     
     def _init_results_tab(self, parent):
@@ -417,7 +437,7 @@ class KiPIDA_MainDialog(wx.Dialog):
              wx.MessageBox("No power rails defined.")
              return
              
-        self.notebook.SetSelection(4) # Switch to Log
+        self.notebook.SetSelection(5) # Switch to Log
         self.log(f"--- Starting System Simulation ({len(system_rails)} rails) ---")
         
         try:
@@ -619,7 +639,7 @@ class KiPIDA_MainDialog(wx.Dialog):
             wx.SafeYield()
 
     def on_run_ac(self, event):
-        self.notebook.SetSelection(4)
+        self.notebook.SetSelection(5)
         self.log("--- Starting AC Impedance Analysis ---")
         try:
             settings, network = self._prepare_ac_analysis()
@@ -633,7 +653,7 @@ class KiPIDA_MainDialog(wx.Dialog):
             wx.MessageBox(str(exc), "AC Analysis Error", wx.OK | wx.ICON_ERROR)
 
     def on_optimize_decoupling(self, event):
-        self.notebook.SetSelection(4)
+        self.notebook.SetSelection(5)
         self.log("--- Starting Decoupling Optimization ---")
         try:
             settings, network = self._prepare_ac_analysis()
@@ -685,7 +705,7 @@ class KiPIDA_MainDialog(wx.Dialog):
             optimization.optimized if optimization else None,
         )
         self._add_plot_tab("AC Impedance", bitmap)
-        self.notebook.SetSelection(3)
+        self.notebook.SetSelection(4)
 
     def _dc_copper_loss_points(self):
         losses = []
@@ -744,7 +764,7 @@ class KiPIDA_MainDialog(wx.Dialog):
         return settings, mesh
 
     def on_run_thermal(self, event):
-        self.notebook.SetSelection(4)
+        self.notebook.SetSelection(5)
         self.log("--- Starting 3D Thermal Analysis ---")
         try:
             settings, mesh = self._prepare_thermal_analysis(coupled=False)
@@ -762,7 +782,7 @@ class KiPIDA_MainDialog(wx.Dialog):
             wx.MessageBox(str(exc), "Thermal Analysis Error", wx.OK | wx.ICON_ERROR)
 
     def on_run_coupled_thermal(self, event):
-        self.notebook.SetSelection(4)
+        self.notebook.SetSelection(5)
         self.log("--- Starting Coupled DC / 3D Thermal Analysis ---")
         try:
             settings, mesh = self._prepare_thermal_analysis(coupled=True)
@@ -828,7 +848,136 @@ class KiPIDA_MainDialog(wx.Dialog):
         self._add_plot_tab("Thermal 3D", plotter.plot_thermal_3d(mesh, result))
         self._add_plot_tab("Top Surface", plotter.plot_thermal_surface(mesh, result, "TOP"))
         self._add_plot_tab("Bottom Surface", plotter.plot_thermal_surface(mesh, result, "BOTTOM"))
-        self.notebook.SetSelection(3)
+        self.notebook.SetSelection(4)
+
+    def _prepare_cfd_analysis(self):
+        """Extract all KiCad-dependent data before starting the worker thread."""
+        settings = self.cfd_panel.get_settings()
+        if not self.thermal_panel.settings.components:
+            self.thermal_panel.refresh_components(preserve_user=True)
+        thermal_settings = self.thermal_panel.get_settings()
+        if settings.include_dc_copper_losses and not getattr(self, "system_results", None):
+            self.log("No current DC result; running DC analysis before enclosure CFD.")
+            self.on_run(None)
+        copper_losses = (
+            self._dc_copper_loss_points()
+            if settings.include_dc_copper_losses and getattr(self, "system_results", None)
+            else []
+        )
+        builder = ThermalModelBuilder(
+            self.board,
+            debug=self.chk_debug.GetValue(),
+            log_callback=self.log,
+        )
+        board_model = builder.build(
+            thermal_settings,
+            rails=self.power_tree.rails,
+            copper_losses=copper_losses,
+        )
+        if not settings.use_phase3_heat_sources:
+            board_model.components = []
+            board_model.copper_losses = []
+        return settings, board_model
+
+    def _cfd_worker_log(self, message):
+        wx.CallAfter(self.log, message)
+
+    def _cfd_worker_progress(self, completed, total, detail):
+        wx.CallAfter(self.log, f"CFD progress: {completed}/{total} ({detail})")
+
+    def on_run_cfd(self, event):
+        if self._cfd_thread is not None and self._cfd_thread.is_alive():
+            self._cfd_cancel_requested = True
+            self.btn_run_cfd.Disable()
+            self.btn_run_cfd.SetLabel("Cancelling CFD...")
+            self.log("Cancellation requested for enclosure CFD.")
+            return
+
+        self.notebook.SetSelection(5)
+        self.log("--- Starting Phase 4 Enclosure CFD Analysis ---")
+        try:
+            settings, board_model = self._prepare_cfd_analysis()
+        except Exception as exc:
+            self.log(f"Enclosure CFD setup error: {exc}")
+            wx.MessageBox(str(exc), "Enclosure CFD Setup Error", wx.OK | wx.ICON_ERROR)
+            return
+
+        self._cfd_cancel_requested = False
+        self.btn_run_cfd.SetLabel("Cancel Enclosure CFD")
+        debug_mode = self.chk_debug.GetValue()
+        self._cfd_thread = threading.Thread(
+            target=self._run_cfd_worker,
+            args=(board_model, settings, debug_mode),
+            name="KiPIDA-Enclosure-CFD",
+            daemon=True,
+        )
+        self._cfd_thread.start()
+
+    def _run_cfd_worker(self, board_model, settings, debug_mode):
+        try:
+            solver = ConjugateHeatTransferSolver(
+                debug=debug_mode,
+                log_callback=self._cfd_worker_log,
+            )
+            mesh, result = solver.solve(
+                board_model,
+                settings,
+                progress_callback=self._cfd_worker_progress,
+                cancel_callback=lambda: self._cfd_cancel_requested,
+            )
+            wx.CallAfter(self._finish_cfd_analysis, mesh, result)
+        except Exception as exc:
+            wx.CallAfter(self._fail_cfd_analysis, exc)
+
+    def _finish_cfd_analysis(self, mesh, result):
+        self._cfd_thread = None
+        self.btn_run_cfd.Enable()
+        self.btn_run_cfd.SetLabel("Run Enclosure CFD")
+        self.cfd_mesh = mesh
+        self.cfd_result = result
+        self.log(
+            f"Enclosure CFD complete: {result.iterations} iterations, "
+            f"Vmax={result.maximum_velocity_m_s:.4g} m/s."
+        )
+        self._update_cfd_results_ui(mesh, result)
+
+    def _fail_cfd_analysis(self, exc):
+        self._cfd_thread = None
+        self.btn_run_cfd.Enable()
+        self.btn_run_cfd.SetLabel("Run Enclosure CFD")
+        message = str(exc)
+        self.log(f"Enclosure CFD error: {message}")
+        if "cancelled" not in message.lower():
+            wx.MessageBox(message, "Enclosure CFD Error", wx.OK | wx.ICON_ERROR)
+
+    def _update_cfd_results_ui(self, mesh, result):
+        lines = [
+            "Phase 4 Enclosure CFD Results",
+            "=============================",
+            "Mode: steady incompressible laminar flow with Boussinesq buoyancy",
+            f"Cells: {mesh.cell_count:,} ({mesh.shape[0]} x {mesh.shape[1]} x {mesh.shape[2]})",
+            f"Iterations: {result.iterations} ({'converged' if result.converged else 'limit reached'})",
+            f"Maximum velocity: {result.maximum_velocity_m_s:.6g} m/s",
+            f"Maximum air temperature: {result.maximum_air_temperature_c:.3f} C",
+            f"Maximum solid temperature: {result.maximum_solid_temperature_c:.3f} C",
+            f"Mapped heat: {result.total_heat_w:.6g} W",
+            f"Mass balance error: {result.mass_balance_error_pct:.4g}%",
+            f"Energy balance error: {result.energy_balance_error_pct:.4g}%",
+            "",
+            "Model scope: structured volumetric CFD, boundary-patch fans/vents, and "
+            "conjugate solid-air heat transfer. Fan blades, turbulence, radiation, "
+            "and transient effects are outside this Phase 4 solver.",
+        ]
+        self.result_text.SetValue("\n".join(lines))
+        self.results_notebook.DeleteAllPages()
+        plotter = Plotter(debug=self.chk_debug.GetValue())
+        self._add_plot_tab("CFD 3D", plotter.plot_cfd_3d(mesh, result))
+        self._add_plot_tab("Temperature XY", plotter.plot_cfd_slice(mesh, result, "TEMPERATURE", "XY"))
+        self._add_plot_tab("Temperature XZ", plotter.plot_cfd_slice(mesh, result, "TEMPERATURE", "XZ"))
+        self._add_plot_tab("Velocity XY", plotter.plot_cfd_slice(mesh, result, "VELOCITY", "XY"))
+        self._add_plot_tab("Pressure XY", plotter.plot_cfd_slice(mesh, result, "PRESSURE", "XY"))
+        self._add_plot_tab("Residuals", plotter.plot_cfd_residuals(result))
+        self.notebook.SetSelection(4)
 
     def _debug_plot_geo(self, extractor, geo):
         try:
@@ -932,7 +1081,13 @@ class KiPIDA_MainDialog(wx.Dialog):
             self.results_notebook.AddPage(rail_notebook, rail_name)
         
         # Switch to Results tab
-        self.notebook.SetSelection(3)
+        self.notebook.SetSelection(4)
 
     def on_close(self, event):
+        if self._cfd_thread is not None and self._cfd_thread.is_alive():
+            self._cfd_cancel_requested = True
+            self.btn_run_cfd.Disable()
+            self.btn_run_cfd.SetLabel("Cancelling CFD...")
+            self.log("Close requested; cancelling enclosure CFD first.")
+            return
         self.EndModal(wx.ID_CANCEL)

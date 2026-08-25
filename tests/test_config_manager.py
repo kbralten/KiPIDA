@@ -12,6 +12,8 @@ if plugin_dir not in sys.path:
 from config_manager import get_project_config_path, save_config, load_config, load_project_config
 from models import (
     ACAnalysisSettings, ACMeasurementPort, ACSourceModel, AirflowSettings, CapacitorModel,
+    CFDBoundaryPatch, CFDSolverSettings, EnclosureCFDSettings, EnclosureGeometrySettings,
+    FluidProperties,
     PowerRail, UnifiedSource, UnifiedLoad, VoltageRegulator, ComponentRef,
     ThermalAnalysisSettings, ThermalComponentModel,
 )
@@ -98,7 +100,7 @@ class TestConfigManager(unittest.TestCase):
             with open(filepath, 'r') as f:
                 data = json.load(f)
             
-            self.assertEqual(data["version"], "1.2")
+            self.assertEqual(data["version"], "1.3")
             self.assertEqual(len(data["rails"]), 3)
             
             # Verify 12V rail
@@ -306,6 +308,61 @@ class TestConfigManager(unittest.TestCase):
         try:
             project = load_project_config(filepath)
             self.assertIsNone(project.thermal_profile)
+        finally:
+            if Path(filepath).exists():
+                os.unlink(filepath)
+
+    def test_cfd_profile_round_trip(self):
+        profile = EnclosureCFDSettings(
+            ambient_c=32.0,
+            geometry=EnclosureGeometrySettings(
+                width_mm=180.0, depth_mm=120.0, height_mm=65.0,
+                board_orientation="XZ", board_offset_x_mm=3.0,
+                wall_heat_transfer_w_m2k=7.5,
+            ),
+            fluid=FluidProperties(density_kg_m3=1.16, conductivity_w_mk=0.027),
+            solver=CFDSolverSettings(
+                cell_size_mm=4.0, max_iterations=350, tolerance=2e-5,
+                relaxation=0.35, include_buoyancy=False, max_cells=123456,
+            ),
+            patches=[CFDBoundaryPatch(
+                "Front fan", "FAN", "XMIN", 0.5, 0.6, 0.3, 0.4,
+                velocity_m_s=1.4, temperature_c=29.0,
+            )],
+            use_phase3_heat_sources=True,
+            include_dc_copper_losses=False,
+        )
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
+            filepath = f.name
+
+        try:
+            save_config(self.rails, filepath, cfd_profile=profile)
+            loaded = load_project_config(filepath).cfd_profile
+
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded.geometry.board_orientation, "XZ")
+            self.assertAlmostEqual(loaded.geometry.width_mm, 180.0)
+            self.assertAlmostEqual(loaded.fluid.density_kg_m3, 1.16)
+            self.assertFalse(loaded.solver.include_buoyancy)
+            self.assertEqual(loaded.solver.max_cells, 123456)
+            self.assertEqual(loaded.patches[0].kind, "FAN")
+            self.assertAlmostEqual(loaded.patches[0].velocity_m_s, 1.4)
+            self.assertFalse(loaded.include_dc_copper_losses)
+        finally:
+            if Path(filepath).exists():
+                os.unlink(filepath)
+
+    def test_legacy_v12_config_migrates_without_cfd_profile(self):
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as f:
+            filepath = f.name
+            json.dump({
+                "version": "1.2", "rails": [], "ac_profiles": {},
+                "thermal_profile": None,
+            }, f)
+
+        try:
+            project = load_project_config(filepath)
+            self.assertIsNone(project.cfd_profile)
         finally:
             if Path(filepath).exists():
                 os.unlink(filepath)
