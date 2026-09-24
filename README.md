@@ -34,12 +34,16 @@ Ki-PIDA communicates with KiCad via the new IPC-based API.
 ![alt text](image-3.png)
 
 ### 2. Install the Plugin
-1. Locate your KiCad plugins directory:
-   - **Windows:** `%APPDATA%\kicad\9.0\plugins`
-   - **Linux:** `~/.local/share/kicad/9.0/plugins`
-   - **macOS:** `~/Library/Application Support/kicad/9.0/plugins`
+1. Locate your KiCad plugins directory (this is the IPC API plugins folder, separate from the legacy `scripting/plugins` folder):
+   - **Windows:** `%USERPROFILE%\Documents\KiCad\<version>\plugins` (e.g. `C:\Users\<you>\Documents\KiCad\10.0\plugins`)
+   - **macOS:** `~/Documents/KiCad/<version>/plugins`
+   - **Linux:** `~/.local/share/KiCad/<version>/plugins` (note the capital `KiCad` — this differs from the lowercase `kicad` settings directory)
 2. Download or clone this repository.
 3. Copy the `KiPIDA` folder into the `plugins` directory.
+4. Restart KiCad completely.
+
+> [!NOTE]
+> An earlier version of this README listed `%APPDATA%\kicad\<version>\plugins` (and the equivalent settings directories on macOS/Linux). That is KiCad's *settings* directory, not the IPC API plugins directory — placing the plugin there causes KiCad to silently ignore it (no error, no icon, no entry under Tools > External Plugins). See KiCad's [IPC API docs for add-on developers](https://dev-docs.kicad.org/en/apis-and-binding/ipc-api/) for the authoritative path.
 
 > [!NOTE]
 > Ki-PIDA includes a self-contained dependency manager that will automatically install required libraries (NumPy, SciPy, Shapely, Matplotlib) upon first launch if they are missing from your KiCad Python environment.
