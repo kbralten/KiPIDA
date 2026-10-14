@@ -3,4 +3,5 @@ scipy
 shapely
 matplotlib
 kicad-python
-pypardiso
+wxpython
+pypardiso; sys.platform != "darwin"
